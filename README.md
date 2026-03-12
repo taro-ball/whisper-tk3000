@@ -36,16 +36,18 @@ python app.py
 ./build.sh
 ```
 
-PyInstaller creates the runnable app in:
+The build script creates a timestamped output directory in `dist/`, for example:
 
 ```text
-dist/ipconfig_runner/
+dist/20260312-173000_ipconfig_runner/
 ```
 
-Run this file:
+At the end of the build, it also opens that folder in Windows Explorer.
+
+Run the executable inside the timestamped directory, for example:
 
 ```powershell
-.\dist\ipconfig_runner\ipconfig_runner.exe
+.\dist\20260312-173000_ipconfig_runner\ipconfig_runner.exe
 ```
 
 Do not run the executable under `build/`; that is only an intermediate PyInstaller artifact.

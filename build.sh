@@ -10,7 +10,11 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python -m PyInstaller --noconfirm ipconfig_runner.spec
 
-# rm -f ./dist/ipconfig_runner.zip
-# powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path '.\\dist\\ipconfig_runner\\*' -DestinationPath '.\\dist\\ipconfig_runner.zip'"
+timestamp="$(date +%Y%m%d-%H%M%S)"
+output_dir="./dist/${timestamp}_ipconfig_runner"
 
-echo "Build complete."
+rm -rf "$output_dir"
+mv ./dist/ipconfig_runner "$output_dir"
+
+echo "Build complete: $output_dir"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process explorer.exe (Resolve-Path '${output_dir//\//\\}')"
