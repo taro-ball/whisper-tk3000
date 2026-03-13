@@ -3,6 +3,7 @@ from __future__ import annotations
 import queue
 import subprocess
 import threading
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -15,6 +16,8 @@ APP_DIR = Path(__file__).resolve().parent
 FFMPEG_PATH = APP_DIR / "bin" / "ffmpeg.exe"
 WHISPER_PATH = APP_DIR / "bin" / "Vulkan" / "main64.exe"
 MODELS_DIR = APP_DIR / "models"
+DEFAULT_MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
+DEFAULT_MODEL_NAME = "ggml-base.en.bin"
 SUPPORTED_MEDIA_TYPES = [
     ("Media files", "*.mp4 *.mkv *.mov *.avi *.mp3 *.wav *.m4a *.flac *.aac *.ogg *.webm"),
     ("All files", "*.*"),
@@ -105,6 +108,13 @@ class App(ctk.CTk):
             self.controls_frame, text="Refresh", width=100, command=self.reload_models
         )
         self.refresh_models_button.grid(row=row, column=2, padx=(0, 12), pady=6, sticky="e")
+        self.download_model_button = ctk.CTkButton(
+            self.controls_frame,
+            text="Download",
+            width=100,
+            command=self.download_default_model,
+        )
+        self.download_model_button.grid(row=row, column=3, padx=(0, 12), pady=6, sticky="e")
 
         row += 1
         ctk.CTkLabel(self.controls_frame, text="Initial prompt").grid(
@@ -184,9 +194,40 @@ class App(ctk.CTk):
         self.run_button.configure(state=state)
         self.browse_button.configure(state=state)
         self.refresh_models_button.configure(state=state)
+        self.download_model_button.configure(state=state)
         self.format_menu.configure(state=state)
         self.model_menu.configure(state=state)
         self.prompt_entry.configure(state=state)
+
+    def download_default_model(self) -> None:
+        if self.is_running:
+            return
+
+        self.set_running_state(True)
+        worker = threading.Thread(target=self._download_default_model, daemon=True)
+        worker.start()
+
+    def _download_default_model(self) -> None:
+        destination = MODELS_DIR / DEFAULT_MODEL_NAME
+        temp_destination = destination.with_suffix(destination.suffix + ".part")
+        try:
+            MODELS_DIR.mkdir(parents=True, exist_ok=True)
+            self.log(f"Downloading model from {DEFAULT_MODEL_URL}")
+            self.log(f"Saving model to {destination}")
+            self._download_file(DEFAULT_MODEL_URL, temp_destination)
+            temp_destination.replace(destination)
+            self.log(f"Model download complete: {destination.name}")
+            self.after(0, self.reload_models)
+            self.after(0, lambda: self.model_var.set(destination.name))
+        except Exception as exc:
+            self.log(f"ERROR: Failed to download model: {exc}")
+            if temp_destination.exists():
+                try:
+                    temp_destination.unlink()
+                except OSError:
+                    pass
+        finally:
+            self.after(0, lambda: self.set_running_state(False))
 
     def clear_console(self) -> None:
         self.console.configure(state="normal")
@@ -328,6 +369,26 @@ class App(ctk.CTk):
             raise RuntimeError(f"{tool_name} exited with code {exit_code}")
 
         self.log(f"{tool_name} finished successfully.")
+
+    def _download_file(self, url: str, destination: Path) -> None:
+        class DownloadProgressBar:
+            def __init__(self, app: App) -> None:
+                self.app = app
+                self.last_percent = -1
+
+            def __call__(self, blocks: int, block_size: int, total_size: int) -> None:
+                if total_size <= 0:
+                    return
+                downloaded = min(blocks * block_size, total_size)
+                percent = int((downloaded * 100) / total_size)
+                if percent != self.last_percent and percent % 10 == 0:
+                    self.last_percent = percent
+                    self.app.log(f"Download progress: {percent}%")
+
+        try:
+            urllib.request.urlretrieve(url, destination, DownloadProgressBar(self))
+        except OSError as exc:
+            raise RuntimeError(f"Could not download model: {exc}") from exc
 
     @staticmethod
     def _quote_argument(arg: str) -> str:
