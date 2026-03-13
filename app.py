@@ -582,47 +582,49 @@ class App(ctk.CTk):
                 self.log(f"Starting transcription for {config['input_path'].name}")
                 self.log(f"Selected output format: {config['format'].upper()}")
                 self.log(f"Selected model: {config['model_path'].name}")
+                try:
+                    self._run_process(
+                        [
+                            str(FFMPEG_PATH),
+                            "-y",
+                            "-i",
+                            str(config["input_path"]),
+                            "-vn",
+                            "-ac",
+                            "1",
+                            "-ar",
+                            "16000",
+                            str(config["audio_output"]),
+                        ],
+                        "ffmpeg",
+                    )
 
-                self._run_process(
-                    [
-                        str(FFMPEG_PATH),
-                        "-y",
-                        "-i",
-                        str(config["input_path"]),
-                        "-vn",
-                        "-ac",
-                        "1",
-                        "-ar",
-                        "16000",
+                    whisper_command = [
+                        str(WHISPER_PATH),
+                        "-m",
+                        str(config["model_path"]),
+                        "-f",
                         str(config["audio_output"]),
-                    ],
-                    "ffmpeg",
-                )
+                        "-of",
+                        str(config["output_base"]),
+                    ]
 
-                whisper_command = [
-                    str(WHISPER_PATH),
-                    "-m",
-                    str(config["model_path"]),
-                    "-f",
-                    str(config["audio_output"]),
-                    "-of",
-                    str(config["output_base"]),
-                ]
+                    if config["format"] == "txt":
+                        whisper_command.extend(["-otxt", "-nt"])
+                    else:
+                        whisper_command.append("-osrt")
 
-                if config["format"] == "txt":
-                    whisper_command.extend(["-otxt", "-nt"])
-                else:
-                    whisper_command.append("-osrt")
+                    if config["prompt"]:
+                        whisper_command.extend(["--prompt", config["prompt"]])
 
-                if config["prompt"]:
-                    whisper_command.extend(["--prompt", config["prompt"]])
+                    self._run_process(whisper_command, "whisper.cpp")
 
-                self._run_process(whisper_command, "whisper.cpp")
-
-                last_output = config["transcript_output"]
-                self.log(f"Success. Output file: {config['transcript_output']}")
-                if should_show_batch_progress:
-                    self.after(0, lambda completed=index, count=total: self._show_batch_progress(completed, count))
+                    last_output = config["transcript_output"]
+                    self.log(f"Success. Output file: {config['transcript_output']}")
+                    if should_show_batch_progress:
+                        self.after(0, lambda completed=index, count=total: self._show_batch_progress(completed, count))
+                finally:
+                    self._cleanup_audio_output(config["audio_output"])
 
             self.after(0, lambda: self._set_result_path(last_output))
         except Exception as exc:
@@ -724,6 +726,15 @@ class App(ctk.CTk):
             raise RuntimeError(f"{tool_name} exited with code {exit_code}")
 
         self.log(f"{tool_name} finished successfully.")
+
+    def _cleanup_audio_output(self, audio_output: Path) -> None:
+        if not audio_output.exists():
+            return
+        try:
+            audio_output.unlink()
+            self.log(f"Removed temporary audio file: {audio_output}")
+        except OSError as exc:
+            self.log(f"WARNING: Could not remove temporary audio file {audio_output}: {exc}")
 
     def _download_file(self, url: str, destination: Path) -> None:
         class DownloadProgressBar:

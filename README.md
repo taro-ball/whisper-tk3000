@@ -13,7 +13,7 @@ Windows desktop app for converting one media file to WAV and transcribing it wit
 
 ## Behavior
 
-- The app converts the selected input to `<input-name>_audio_<timestamp>.wav` in the same folder.
+- The app converts the selected input to a temporary `<input-name>_audio_<timestamp>.wav` in the same folder and removes it after transcription finishes.
 - It writes the transcript beside that WAV file as:
   - `<audio-name>_transcript_<timestamp>.srt`
   - `<audio-name>_transcript_<timestamp>.txt`
