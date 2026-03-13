@@ -107,11 +107,12 @@ class App(ctk.CTk):
         ctk.CTkLabel(self.controls_frame, text="Input file").grid(
             row=row, column=0, padx=12, pady=(12, 6), sticky="w"
         )
-        ctk.CTkEntry(
+        self.input_entry = ctk.CTkEntry(
             self.controls_frame,
             textvariable=self.input_path_var,
             placeholder_text="Select one audio or video file",
-        ).grid(row=row, column=1, padx=12, pady=(12, 6), sticky="ew")
+        )
+        self.input_entry.grid(row=row, column=1, padx=12, pady=(12, 6), sticky="ew")
         self.browse_button = ctk.CTkButton(
             self.controls_frame, text="Browse", width=100, command=self.select_input_file
         )
@@ -430,6 +431,7 @@ class App(ctk.CTk):
         self.format_menu.configure(state=state)
         self.model_menu.configure(state=state)
         self.prompt_entry.configure(state=state)
+        self.input_entry.configure(state=state)
 
     def show_download_dialog(self) -> None:
         if self.is_running:
@@ -565,10 +567,14 @@ class App(ctk.CTk):
         worker.start()
 
     def _execute_transcription(self) -> None:
+        should_show_batch_progress = len(self.batch_selected_files) > 1
         try:
             configs = self._build_run_configs()
             total = len(configs)
             last_output: Path | None = None
+
+            if should_show_batch_progress:
+                self.after(0, lambda: self._show_batch_progress(0, total))
 
             for index, config in enumerate(configs, start=1):
                 if total > 1:
@@ -615,12 +621,16 @@ class App(ctk.CTk):
 
                 last_output = config["transcript_output"]
                 self.log(f"Success. Output file: {config['transcript_output']}")
+                if should_show_batch_progress:
+                    self.after(0, lambda completed=index, count=total: self._show_batch_progress(completed, count))
 
             self.after(0, lambda: self._set_result_path(last_output))
         except Exception as exc:
             self.log(f"ERROR: {exc}")
             self.after(0, lambda: self._set_result_path(None))
         finally:
+            if should_show_batch_progress:
+                self.after(0, self._restore_batch_input_summary)
             self.after(0, lambda: self.set_running_state(False))
 
     def _build_run_configs(self) -> list[dict[str, Path | str]]:
@@ -750,6 +760,19 @@ class App(ctk.CTk):
         self.result_link_button.configure(
             text=path.name,
             state="normal",
+        )
+
+    def _show_batch_progress(self, completed: int, total: int) -> None:
+        self._set_input_path_text(f"{completed} of {total} files processed")
+
+    def _restore_batch_input_summary(self) -> None:
+        if not self.batch_selected_files:
+            return
+        if len(self.batch_selected_files) == 1:
+            self._set_input_path_text(str(self.batch_selected_files[0]))
+            return
+        self._set_input_path_text(
+            f"{len(self.batch_selected_files)} files selected from {self.batch_selected_files[0].parent}"
         )
 
     def reveal_result_file(self) -> None:
