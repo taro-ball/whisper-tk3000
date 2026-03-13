@@ -15,6 +15,9 @@ from tkinter import messagebox
 
 
 APP_DIR = Path(__file__).resolve().parent
+APP_NAME = "whisper-tk3000"
+APP_VERSION = "0.1.0"
+APP_TITLE = "whisper-tk3000 audio to text transcriber"
 FFMPEG_PATH = APP_DIR / "bin" / "ffmpeg.exe"
 WHISPER_PATH = APP_DIR / "bin" / "Vulkan" / "main64.exe"
 MODELS_DIR = APP_DIR / "models"
@@ -74,7 +77,7 @@ class App(ctk.CTk):
         ctk.set_appearance_mode("system")
         ctk.set_default_color_theme("green")
 
-        self.title("whisper-tk3000")
+        self.title(APP_NAME)
         self.geometry("920x680")
         self.minsize(840, 620)
 
@@ -104,12 +107,27 @@ class App(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
+        self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.header_frame.grid(row=0, column=0, padx=16, pady=(16, 8), sticky="ew")
+        self.header_frame.grid_columnconfigure(0, weight=1)
+
         self.header_label = ctk.CTkLabel(
-            self,
-            text="whisper-tk3000 audio to text transcriber",
+            self.header_frame,
+            text=APP_TITLE,
             font=ctk.CTkFont(size=26, weight="bold"),
         )
-        self.header_label.grid(row=0, column=0, padx=16, pady=(16, 8), sticky="w")
+        self.header_label.grid(row=0, column=0, padx=0, pady=0, sticky="w")
+
+        self.help_button = ctk.CTkButton(
+            self.header_frame,
+            text="?",
+            width=1,
+            height=22,
+            corner_radius=12,
+            command=self.show_about_dialog,
+            font=ctk.CTkFont(size=12, weight="bold"),
+        )
+        self.help_button.grid(row=0, column=1, padx=(8, 0), pady=0, sticky="e")
 
         self.controls_frame = ctk.CTkFrame(self)
         self.controls_frame.grid(row=1, column=0, padx=16, pady=(0, 12), sticky="ew")
@@ -537,12 +555,21 @@ class App(ctk.CTk):
             self.download_dialog.destroy()
         self.download_dialog = None
 
+    def show_about_dialog(self) -> None:
+        about_text = (
+            f"{APP_NAME}\n"
+            f"Version {APP_VERSION}\n\n"
+            "Desktop app for converting media to WAV and transcribing it with whisper.cpp.\n\n"
+            "Credits\n"
+            "- whisper.cpp for transcription\n"
+            "- ffmpeg for media conversion\n"
+            "- Model downloads from the whisper.cpp Hugging Face repository\n\n"
+            f"Models: {MODEL_REPO_URL}"
+        )
+        messagebox.showinfo(f"About {APP_NAME}", about_text, parent=self)
+
     def open_manual_download_page(self) -> None:
-        try:
-            webbrowser.open(MODEL_REPO_URL)
-            self.log(f"Opened manual download page: {MODEL_REPO_URL}")
-        except OSError as exc:
-            self.log(f"ERROR: Could not open browser: {exc}")
+        self._open_url(MODEL_REPO_URL, f"Opened manual download page: {MODEL_REPO_URL}")
 
     def download_selected_model(self) -> None:
         if self.is_running:
@@ -918,6 +945,14 @@ class App(ctk.CTk):
             subprocess.Popen(["explorer.exe", "/select,", str(path)], shell=False)
         except OSError as exc:
             self.log(f"ERROR: Could not reveal result file: {exc}")
+
+    def _open_url(self, url: str, success_message: str | None = None) -> None:
+        try:
+            webbrowser.open(url)
+            if success_message is not None:
+                self.log(success_message)
+        except OSError as exc:
+            self.log(f"ERROR: Could not open browser: {exc}")
 
 
 if __name__ == "__main__":
