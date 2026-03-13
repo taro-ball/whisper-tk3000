@@ -47,6 +47,20 @@ SUPPORTED_MEDIA_TYPES = [
     ("Media files", "*.mp4 *.mkv *.mov *.avi *.mp3 *.wav *.m4a *.flac *.aac *.ogg *.webm"),
     ("All files", "*.*"),
 ]
+WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def build_hidden_subprocess_kwargs() -> dict[str, object]:
+    if WINDOWS_NO_WINDOW == 0:
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    return {
+        "creationflags": WINDOWS_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
 
 
 class TranscriptionCancelled(Exception):
@@ -785,6 +799,7 @@ class App(ctk.CTk):
                 encoding="utf-8",
                 errors="replace",
                 shell=False,
+                **build_hidden_subprocess_kwargs(),
             )
         except OSError as exc:
             raise RuntimeError(f"Failed to start {tool_name}: {exc}") from exc
