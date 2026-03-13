@@ -74,7 +74,7 @@ class App(ctk.CTk):
         ctk.set_appearance_mode("system")
         ctk.set_default_color_theme("green")
 
-        self.title("Whisper Transcriber")
+        self.title("whisper-tk3000")
         self.geometry("920x680")
         self.minsize(840, 620)
 
@@ -106,7 +106,7 @@ class App(ctk.CTk):
 
         self.header_label = ctk.CTkLabel(
             self,
-            text="Whisper Media Transcriber",
+            text="whisper-tk3000 audio to text transcriber",
             font=ctk.CTkFont(size=26, weight="bold"),
         )
         self.header_label.grid(row=0, column=0, padx=16, pady=(16, 8), sticky="w")
