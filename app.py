@@ -11,6 +11,7 @@ from pathlib import Path
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import filedialog, ttk
+from tkinter import messagebox
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -48,6 +49,10 @@ SUPPORTED_MEDIA_TYPES = [
 ]
 
 
+class TranscriptionCancelled(Exception):
+    pass
+
+
 class App(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -61,6 +66,10 @@ class App(ctk.CTk):
 
         self.output_queue: queue.Queue[str] = queue.Queue()
         self.is_running = False
+        self.transcription_running = False
+        self.cancel_requested = False
+        self.current_process: subprocess.Popen[str] | None = None
+        self.process_lock = threading.Lock()
 
         self.input_path_var = tk.StringVar()
         self.format_var = tk.StringVar(value="srt subtitle")
@@ -427,7 +436,14 @@ class App(ctk.CTk):
     def set_running_state(self, running: bool) -> None:
         self.is_running = running
         state = "disabled" if running else "normal"
-        self.run_button.configure(state=state)
+        if self.transcription_running:
+            self.run_button.configure(text="Cancel", command=self.cancel_transcription, state="normal")
+        else:
+            self.run_button.configure(
+                text="Convert and Transcribe",
+                command=self.run_transcription,
+                state=state,
+            )
         self.browse_button.configure(state=state)
         self.batch_button.configure(state=state)
         self.refresh_models_button.configure(state=state)
@@ -566,9 +582,36 @@ class App(ctk.CTk):
 
         self.clear_console()
         self._set_result_path(None)
+        self.cancel_requested = False
+        self.transcription_running = True
         self.set_running_state(True)
         worker = threading.Thread(target=self._execute_transcription, daemon=True)
         worker.start()
+
+    def cancel_transcription(self) -> None:
+        if not self.transcription_running:
+            return
+
+        should_cancel = messagebox.askyesno(
+            "Cancel transcription",
+            "Stop the current transcription job?",
+            parent=self,
+        )
+        if not should_cancel:
+            return
+
+        if not self.cancel_requested:
+            self.cancel_requested = True
+            self.log("Cancellation requested. Stopping the current process...")
+
+        with self.process_lock:
+            process = self.current_process
+
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError as exc:
+                self.log(f"WARNING: Failed to terminate the current process: {exc}")
 
     def _execute_transcription(self) -> None:
         should_show_batch_progress = len(self.batch_selected_files) > 1
@@ -581,6 +624,7 @@ class App(ctk.CTk):
                 self.after(0, lambda: self._show_batch_progress(0, total))
 
             for index, config in enumerate(configs, start=1):
+                self._raise_if_cancelled()
                 if total > 1:
                     self.log(f"Batch item {index} of {total}")
                 self.log(f"Starting transcription for {config['input_path'].name}")
@@ -602,6 +646,7 @@ class App(ctk.CTk):
                         ],
                         "ffmpeg",
                     )
+                    self._raise_if_cancelled()
 
                     whisper_command = [
                         str(WHISPER_PATH),
@@ -632,10 +677,15 @@ class App(ctk.CTk):
                     self._cleanup_audio_output(config["audio_output"])
 
             self.after(0, lambda: self._set_result_path(last_output))
+        except TranscriptionCancelled:
+            self.log("Transcription cancelled.")
+            self.after(0, lambda: self._set_result_path(None))
         except Exception as exc:
             self.log(f"ERROR: {exc}")
             self.after(0, lambda: self._set_result_path(None))
         finally:
+            self.transcription_running = False
+            self.cancel_requested = False
             if should_show_batch_progress:
                 self.after(0, self._restore_batch_input_summary)
             self.after(0, lambda: self.set_running_state(False))
@@ -723,6 +773,7 @@ class App(ctk.CTk):
         return candidate
 
     def _run_process(self, command: list[str], tool_name: str) -> None:
+        self._raise_if_cancelled()
         self.log(f"Running {tool_name}: {' '.join(self._quote_argument(arg) for arg in command)}")
         output_lines: list[str] = []
         try:
@@ -738,12 +789,24 @@ class App(ctk.CTk):
         except OSError as exc:
             raise RuntimeError(f"Failed to start {tool_name}: {exc}") from exc
 
-        if process.stdout is not None:
-            for line in process.stdout:
-                output_lines.append(line)
-                self.output_queue.put(line)
+        with self.process_lock:
+            self.current_process = process
 
-        exit_code = process.wait()
+        try:
+            if process.stdout is not None:
+                for line in process.stdout:
+                    output_lines.append(line)
+                    self.output_queue.put(line)
+
+            exit_code = process.wait()
+        finally:
+            with self.process_lock:
+                if self.current_process is process:
+                    self.current_process = None
+
+        if self.cancel_requested:
+            raise TranscriptionCancelled()
+
         if exit_code != 0:
             if tool_name == "ffmpeg":
                 combined_output = "".join(output_lines)
@@ -752,6 +815,10 @@ class App(ctk.CTk):
             raise RuntimeError(f"{tool_name} exited with code {exit_code}")
 
         self.log(f"{tool_name} finished successfully.")
+
+    def _raise_if_cancelled(self) -> None:
+        if self.cancel_requested:
+            raise TranscriptionCancelled()
 
     def _cleanup_audio_output(self, audio_output: Path) -> None:
         if not audio_output.exists():
