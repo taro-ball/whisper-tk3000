@@ -7,3 +7,5 @@ dist/
 *.spec.bak
 
 .codex/
+bin/
+models/
