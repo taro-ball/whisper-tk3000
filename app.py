@@ -566,7 +566,15 @@ class App(ctk.CTk):
             "- Model downloads from the whisper.cpp Hugging Face repository\n\n"
             f"Models: {MODEL_REPO_URL}"
         )
-        messagebox.showinfo(f"About {APP_NAME}", about_text, parent=self)
+        dialog = ctk.CTkToplevel(self)
+        dialog.title(f"About {APP_NAME}")
+        dialog.geometry("520x240")
+        dialog.transient(self)
+        dialog.grab_set()
+        text = ctk.CTkTextbox(dialog, wrap="word")
+        text.pack(fill="both", expand=True, padx=12, pady=12)
+        text.insert("1.0", about_text)
+        text.configure(state="disabled")
 
     def open_manual_download_page(self) -> None:
         self._open_url(MODEL_REPO_URL, f"Opened manual download page: {MODEL_REPO_URL}")
