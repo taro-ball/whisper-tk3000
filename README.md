@@ -7,6 +7,7 @@ Windows desktop app for converting one media file to WAV and transcribing it wit
 - Select one input audio or video file.
 - Choose output format: `srt` or `txt`.
 - Choose a Whisper model from `models/*.bin`.
+- If no model is installed yet, download one from inside the app.
 - Optionally provide an initial prompt.
 - Click `Convert and Transcribe`.
 
@@ -24,16 +25,17 @@ Windows desktop app for converting one media file to WAV and transcribing it wit
 
 - ffmpeg: `bin/ffmpeg.exe`
 - whispercpp: `bin/Vulkan/main64.exe`
-- At least one model file in `models/*.bin`
-  where to get the model:
-https://huggingface.co/ggerganov/whisper.cpp/blob/main/ggml-large-v3-turbo.bin
+- Whisper models are not bundled into the PyInstaller build.
+- Download a model from the app, or place a `.bin` file under `models/`.
+- Model downloads come from:
+  `https://huggingface.co/ggerganov/whisper.cpp/tree/main`
 
 
 ## Files
 
 - `app.py` - GUI app entry point
 - `requirements.txt` - Python dependencies
-- `whisper_transcriber.spec` - PyInstaller spec for a `onedir` build
+- `whisper_transcriber.spec` - PyInstaller spec for a `onedir` build without bundled model files
 - `build.sh` - optional Git Bash build script
 
 ## Run locally

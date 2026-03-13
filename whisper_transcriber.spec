@@ -50,7 +50,6 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     Tree("bin", prefix="bin"),
-    Tree("models", prefix="models"),
     strip=False,
     upx=True,
     upx_exclude=[],
