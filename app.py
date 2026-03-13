@@ -558,8 +558,10 @@ class App(ctk.CTk):
     def show_about_dialog(self) -> None:
         about_text = (
             f"{APP_NAME}\n"
-            f"Version {APP_VERSION}\n\n"
-            "Desktop app for converting media to WAV and transcribing it with whisper.cpp.\n\n"
+            f"Version {APP_VERSION}\n"
+            "https://github.com/taro-ball/whisper-tk3000\n\n"
+            "Desktop app for converting media to WAV and transcribing it with whisper.cpp.\n"
+            "Dedicated to my wife, who's love for science always inspires me.\n\n"
             "Credits\n"
             "- whisper.cpp for transcription\n"
             "- ffmpeg for media conversion\n"
