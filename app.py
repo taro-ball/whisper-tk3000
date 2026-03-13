@@ -53,7 +53,7 @@ class App(ctk.CTk):
         super().__init__()
 
         ctk.set_appearance_mode("system")
-        ctk.set_default_color_theme("blue")
+        ctk.set_default_color_theme("green")
 
         self.title("Whisper Transcriber")
         self.geometry("920x680")
@@ -180,6 +180,8 @@ class App(ctk.CTk):
         self.result_row.grid_columnconfigure(1, weight=1)
         self.result_label = ctk.CTkLabel(self.result_row, text="Transcribed text:")
         self.result_label.grid(row=0, column=0, padx=(0, 8), pady=0, sticky="w")
+        self.result_link_font = ctk.CTkFont(underline=True)
+        self.result_link_disabled_font = ctk.CTkFont(underline=False)
         self.result_link_button = ctk.CTkButton(
             self.result_row,
             text="No result yet",
@@ -191,6 +193,8 @@ class App(ctk.CTk):
             width=0,
             border_width=0,
             corner_radius=0,
+            font=self.result_link_font,
+            cursor="hand2",
         )
         self.result_link_button.grid(row=0, column=1, padx=0, pady=0, sticky="w")
         self._set_result_path(None)
@@ -660,10 +664,15 @@ class App(ctk.CTk):
         configs: list[dict[str, Path | str]] = []
 
         for input_path in input_paths:
-            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            audio_output = input_path.with_name(f"{input_path.stem}_audio_{timestamp}.wav")
-            output_base = audio_output.with_name(f"{audio_output.stem}_transcript_{timestamp}")
-            transcript_output = output_base.with_suffix(f".{selected_format}")
+            timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
+            audio_output = self._build_unique_output_path(input_path, ".wav")
+            transcript_base_name = f"{input_path.stem}{timestamp}.transcript"
+            transcript_output = self._build_unique_output_path(
+                input_path,
+                f".{selected_format}",
+                stem=transcript_base_name,
+            )
+            output_base = transcript_output.with_suffix("")
 
             configs.append(
                 {
@@ -695,6 +704,22 @@ class App(ctk.CTk):
             raise FileNotFoundError(f"Input file does not exist: {input_path}")
 
         return [input_path]
+
+    def _build_unique_output_path(
+        self,
+        input_path: Path,
+        suffix: str,
+        stem: str | None = None,
+    ) -> Path:
+        base_stem = stem or input_path.stem
+        candidate = input_path.with_name(f"{base_stem}{suffix}")
+        index = 1
+
+        while candidate.exists():
+            candidate = input_path.with_name(f"{base_stem}-{index}{suffix}")
+            index += 1
+
+        return candidate
 
     def _run_process(self, command: list[str], tool_name: str) -> None:
         self.log(f"Running {tool_name}: {' '.join(self._quote_argument(arg) for arg in command)}")
@@ -762,15 +787,26 @@ class App(ctk.CTk):
             return f'"{arg}"'
         return arg
 
+    @staticmethod
+    def _truncate_result_label(name: str, max_length: int = 48) -> str:
+        if len(name) <= max_length:
+            return name
+        return f"{name[: max_length - 3]}..."
+
     def _set_result_path(self, path: Path | None) -> None:
         self.latest_result_path = path
         if path is None:
-            self.result_link_button.configure(text="No result yet", state="disabled")
+            self.result_link_button.configure(
+                text="No result yet",
+                state="disabled",
+                font=self.result_link_disabled_font,
+            )
             return
 
         self.result_link_button.configure(
-            text=path.name,
+            text=f"{self._truncate_result_label(path.name)} >>",
             state="normal",
+            font=self.result_link_font,
         )
 
     def _show_batch_progress(self, completed: int, total: int) -> None:
