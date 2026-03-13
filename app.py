@@ -611,6 +611,7 @@ class App(ctk.CTk):
                         str(config["audio_output"]),
                         "-of",
                         str(config["output_base"]),
+                        "-pp",
                     ]
 
                     if config["format"] == "txt":
