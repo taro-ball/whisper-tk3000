@@ -1,5 +1,6 @@
 # PyInstaller spec for a Windows onedir build.
 
+from PyInstaller.building.datastruct import Tree
 from PyInstaller.utils.hooks import collect_data_files
 
 
@@ -30,7 +31,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="ipconfig_runner",
+    name="whisper_transcriber",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -48,8 +49,10 @@ coll = COLLECT(
     a.binaries,
     a.zipfiles,
     a.datas,
+    Tree("bin", prefix="bin"),
+    Tree("models", prefix="models"),
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="ipconfig_runner",
+    name="whisper_transcriber",
 )
