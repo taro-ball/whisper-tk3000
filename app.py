@@ -39,6 +39,7 @@ class App(ctk.CTk):
         self.format_var = tk.StringVar(value="srt")
         self.model_var = tk.StringVar()
         self.prompt_var = tk.StringVar()
+        self.latest_result_path: Path | None = None
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -125,6 +126,26 @@ class App(ctk.CTk):
         )
         self.run_button.grid(row=row, column=0, padx=12, pady=(8, 12), sticky="w")
 
+        self.result_row = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
+        self.result_row.grid(row=row, column=1, columnspan=2, padx=12, pady=(8, 12), sticky="ew")
+        self.result_row.grid_columnconfigure(1, weight=1)
+        self.result_label = ctk.CTkLabel(self.result_row, text="Transcribed text:")
+        self.result_label.grid(row=0, column=0, padx=(0, 8), pady=0, sticky="w")
+        self.result_link_button = ctk.CTkButton(
+            self.result_row,
+            text="No result yet",
+            command=self.reveal_result_file,
+            fg_color="transparent",
+            text_color=("blue", "#7fb3ff"),
+            hover_color=self.controls_frame.cget("fg_color"),
+            anchor="w",
+            width=0,
+            border_width=0,
+            corner_radius=0,
+        )
+        self.result_link_button.grid(row=0, column=1, padx=0, pady=0, sticky="w")
+        self._set_result_path(None)
+
     def append_output(self, text: str) -> None:
         self.console.configure(state="normal")
         self.console.insert("end", text)
@@ -177,6 +198,7 @@ class App(ctk.CTk):
             return
 
         self.clear_console()
+        self._set_result_path(None)
         self.set_running_state(True)
         worker = threading.Thread(target=self._execute_transcription, daemon=True)
         worker.start()
@@ -225,8 +247,10 @@ class App(ctk.CTk):
             self._run_process(whisper_command, "whisper.cpp")
 
             self.log(f"Success. Output file: {config['transcript_output']}")
+            self.after(0, lambda: self._set_result_path(config["transcript_output"]))
         except Exception as exc:
             self.log(f"ERROR: {exc}")
+            self.after(0, lambda: self._set_result_path(None))
         finally:
             self.after(0, lambda: self.set_running_state(False))
 
@@ -310,6 +334,31 @@ class App(ctk.CTk):
         if " " in arg or "\t" in arg:
             return f'"{arg}"'
         return arg
+
+    def _set_result_path(self, path: Path | None) -> None:
+        self.latest_result_path = path
+        if path is None:
+            self.result_link_button.configure(text="No result yet", state="disabled")
+            return
+
+        self.result_link_button.configure(
+            text=path.name,
+            state="normal",
+        )
+
+    def reveal_result_file(self) -> None:
+        path = self.latest_result_path
+        if path is None:
+            return
+        if not path.exists():
+            self.log(f"Result file no longer exists: {path}")
+            self._set_result_path(None)
+            return
+
+        try:
+            subprocess.Popen(["explorer.exe", "/select,", str(path)], shell=False)
+        except OSError as exc:
+            self.log(f"ERROR: Could not reveal result file: {exc}")
 
 
 if __name__ == "__main__":

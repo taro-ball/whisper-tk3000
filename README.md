@@ -22,16 +22,12 @@ Windows desktop app for converting one media file to WAV and transcribing it wit
 
 ## Dependencies
 
-- `bin/ffmpeg.exe`
-- `bin/Vulkan/main64.exe`
+- ffmpeg: `bin/ffmpeg.exe`
+- whispercpp: `bin/Vulkan/main64.exe`
 - At least one model file in `models/*.bin`
+  where to get the model:
+https://huggingface.co/ggerganov/whisper.cpp/blob/main/ggml-large-v3-turbo.bin
 
-## Logging and errors
-
-- Console output is timestamped for app-generated status lines.
-- `ffmpeg` and `whisper.cpp` stdout and stderr are streamed into the GUI console.
-- The final output file path is printed on success.
-- Clear errors are shown for missing input, missing dependencies, missing models, or non-zero exit codes.
 
 ## Files
 
@@ -54,16 +50,4 @@ python app.py
 
 ```bash
 ./build.sh
-```
-
-The build script creates a timestamped output directory in `dist/`, for example:
-
-```text
-dist/20260312-173000_whisper_transcriber/
-```
-
-Run the executable inside that directory, for example:
-
-```powershell
-.\dist\20260312-173000_whisper_transcriber\whisper_transcriber.exe
 ```
