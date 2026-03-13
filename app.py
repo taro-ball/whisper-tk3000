@@ -10,7 +10,7 @@ from pathlib import Path
 
 import customtkinter as ctk
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, ttk
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -69,6 +69,14 @@ class App(ctk.CTk):
         self.download_model_var = tk.StringVar(value=MODEL_OPTIONS[0]["name"])
         self.latest_result_path: Path | None = None
         self.download_dialog: ctk.CTkToplevel | None = None
+        self.batch_dialog: ctk.CTkToplevel | None = None
+        self.batch_folder_var = tk.StringVar()
+        self.batch_selected_files: list[Path] = []
+        self.batch_file_rows: list[Path] = []
+        self.batch_tree: ttk.Treeview | None = None
+        self._suspend_input_path_tracking = False
+
+        self.input_path_var.trace_add("write", self._on_input_path_changed)
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -108,6 +116,10 @@ class App(ctk.CTk):
             self.controls_frame, text="Browse", width=100, command=self.select_input_file
         )
         self.browse_button.grid(row=row, column=2, padx=(0, 12), pady=(12, 6), sticky="e")
+        self.batch_button = ctk.CTkButton(
+            self.controls_frame, text="Batch", width=100, command=self.open_batch_dialog
+        )
+        self.batch_button.grid(row=row, column=3, padx=(0, 12), pady=(12, 6), sticky="e")
 
         row += 1
         ctk.CTkLabel(self.controls_frame, text="Output format").grid(
@@ -203,7 +215,200 @@ class App(ctk.CTk):
             filetypes=SUPPORTED_MEDIA_TYPES,
         )
         if selected:
-            self.input_path_var.set(selected)
+            self.batch_selected_files = []
+            self._set_input_path_text(selected)
+
+    def open_batch_dialog(self) -> None:
+        if self.is_running:
+            return
+
+        folder = filedialog.askdirectory(title="Select folder with media files")
+        if not folder:
+            return
+
+        media_files = self._find_media_files(Path(folder))
+        if not media_files:
+            self.log(f"No supported media files found in {folder}")
+            return
+
+        if self.batch_dialog is not None and self.batch_dialog.winfo_exists():
+            self.batch_dialog.destroy()
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Batch Selection")
+        dialog.geometry("760x480")
+        dialog.minsize(680, 420)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(2, weight=1)
+        self.batch_dialog = dialog
+        self.batch_folder_var.set(folder)
+        self.batch_file_rows = media_files
+
+        preselected = set(self.batch_selected_files)
+        selected_files = {path for path in media_files if path in preselected}
+        if not selected_files:
+            selected_files = set(media_files)
+
+        ctk.CTkLabel(
+            dialog,
+            text="Choose files to process",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).grid(row=0, column=0, padx=20, pady=(20, 8), sticky="w")
+
+        ctk.CTkLabel(
+            dialog,
+            textvariable=self.batch_folder_var,
+            justify="left",
+            wraplength=700,
+        ).grid(row=1, column=0, padx=20, pady=(0, 12), sticky="w")
+
+        table_frame = ctk.CTkFrame(dialog)
+        table_frame.grid(row=2, column=0, padx=20, pady=0, sticky="nsew")
+        table_frame.grid_columnconfigure(0, weight=1)
+        table_frame.grid_rowconfigure(0, weight=1)
+
+        columns = ("selected", "name", "type")
+        tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="none")
+        tree.heading("selected", text="Use")
+        tree.heading("name", text="File")
+        tree.heading("type", text="Type")
+        tree.column("selected", width=70, anchor="center", stretch=False)
+        tree.column("name", width=500, anchor="w")
+        tree.column("type", width=110, anchor="w", stretch=False)
+
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        for index, path in enumerate(media_files):
+            checked = "[x]" if path in selected_files else "[ ]"
+            tree.insert("", "end", iid=str(index), values=(checked, path.name, path.suffix.lower()))
+
+        tree.bind("<Button-1>", self._on_batch_tree_click)
+        tree.bind("<space>", self._on_batch_tree_space)
+        self.batch_tree = tree
+
+        actions_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        actions_frame.grid(row=3, column=0, padx=20, pady=(16, 20), sticky="ew")
+        actions_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkButton(
+            actions_frame,
+            text="Select all",
+            width=100,
+            command=lambda: self._set_all_batch_rows(True),
+        ).grid(row=0, column=0, padx=(0, 12), pady=0, sticky="w")
+        ctk.CTkButton(
+            actions_frame,
+            text="Clear",
+            width=100,
+            command=lambda: self._set_all_batch_rows(False),
+        ).grid(row=0, column=1, padx=(0, 12), pady=0, sticky="w")
+        ctk.CTkButton(
+            actions_frame,
+            text="Cancel",
+            width=100,
+            command=self.close_batch_dialog,
+        ).grid(row=0, column=2, padx=(12, 12), pady=0, sticky="e")
+        ctk.CTkButton(
+            actions_frame,
+            text="Use selected",
+            width=120,
+            command=self.apply_batch_selection,
+        ).grid(row=0, column=3, padx=(0, 0), pady=0, sticky="e")
+
+        dialog.protocol("WM_DELETE_WINDOW", self.close_batch_dialog)
+
+    def close_batch_dialog(self) -> None:
+        if self.batch_dialog is not None and self.batch_dialog.winfo_exists():
+            self.batch_dialog.destroy()
+        self.batch_dialog = None
+        self.batch_tree = None
+
+    def apply_batch_selection(self) -> None:
+        selected = self._get_checked_batch_files()
+        if not selected:
+            self.log("No batch files selected.")
+            return
+
+        self.batch_selected_files = selected
+        if len(selected) == 1:
+            self._set_input_path_text(str(selected[0]))
+        else:
+            self._set_input_path_text(f"{len(selected)} files selected from {selected[0].parent}")
+        self.close_batch_dialog()
+
+    def _find_media_files(self, folder: Path) -> list[Path]:
+        patterns = ["*.mp4", "*.mkv", "*.mov", "*.avi", "*.mp3", "*.wav", "*.m4a", "*.flac", "*.aac", "*.ogg", "*.webm"]
+        media_files: list[Path] = []
+        for pattern in patterns:
+            media_files.extend(path for path in folder.glob(pattern) if path.is_file())
+            media_files.extend(path for path in folder.glob(pattern.upper()) if path.is_file())
+        return sorted(set(media_files), key=lambda path: path.name.lower())
+
+    def _on_batch_tree_click(self, event: tk.Event) -> str | None:
+        if self.batch_tree is None:
+            return None
+        region = self.batch_tree.identify("region", event.x, event.y)
+        column = self.batch_tree.identify_column(event.x)
+        row_id = self.batch_tree.identify_row(event.y)
+        if region == "cell" and column == "#1" and row_id:
+            self._toggle_batch_row(row_id)
+            return "break"
+        return None
+
+    def _on_batch_tree_space(self, _event: tk.Event) -> str | None:
+        if self.batch_tree is None:
+            return None
+        selected_item = self.batch_tree.focus()
+        if selected_item:
+            self._toggle_batch_row(selected_item)
+            return "break"
+        return None
+
+    def _toggle_batch_row(self, row_id: str) -> None:
+        if self.batch_tree is None:
+            return
+        values = list(self.batch_tree.item(row_id, "values"))
+        if not values:
+            return
+        values[0] = "[ ]" if values[0] == "[x]" else "[x]"
+        self.batch_tree.item(row_id, values=values)
+
+    def _set_all_batch_rows(self, checked: bool) -> None:
+        if self.batch_tree is None:
+            return
+        marker = "[x]" if checked else "[ ]"
+        for row_id in self.batch_tree.get_children():
+            values = list(self.batch_tree.item(row_id, "values"))
+            values[0] = marker
+            self.batch_tree.item(row_id, values=values)
+
+    def _get_checked_batch_files(self) -> list[Path]:
+        if self.batch_tree is None:
+            return list(self.batch_selected_files)
+        selected: list[Path] = []
+        for row_id in self.batch_tree.get_children():
+            values = self.batch_tree.item(row_id, "values")
+            if values and values[0] == "[x]":
+                selected.append(self.batch_file_rows[int(row_id)])
+        return selected
+
+    def _set_input_path_text(self, value: str) -> None:
+        self._suspend_input_path_tracking = True
+        try:
+            self.input_path_var.set(value)
+        finally:
+            self._suspend_input_path_tracking = False
+
+    def _on_input_path_changed(self, *_args: object) -> None:
+        if self._suspend_input_path_tracking:
+            return
+        if self.batch_selected_files:
+            self.batch_selected_files = []
 
     def reload_models(self) -> None:
         models = sorted(path.name for path in MODELS_DIR.glob("*.bin"))
@@ -219,6 +424,7 @@ class App(ctk.CTk):
         state = "disabled" if running else "normal"
         self.run_button.configure(state=state)
         self.browse_button.configure(state=state)
+        self.batch_button.configure(state=state)
         self.refresh_models_button.configure(state=state)
         self.download_model_button.configure(state=state)
         self.format_menu.configure(state=state)
@@ -360,64 +566,64 @@ class App(ctk.CTk):
 
     def _execute_transcription(self) -> None:
         try:
-            config = self._build_run_config()
-            self.log(f"Starting transcription for {config['input_path'].name}")
-            self.log(f"Selected output format: {config['format'].upper()}")
-            self.log(f"Selected model: {config['model_path'].name}")
+            configs = self._build_run_configs()
+            total = len(configs)
+            last_output: Path | None = None
 
-            self._run_process(
-                [
-                    str(FFMPEG_PATH),
-                    "-y",
-                    "-i",
-                    str(config["input_path"]),
-                    "-vn",
-                    "-ac",
-                    "1",
-                    "-ar",
-                    "16000",
+            for index, config in enumerate(configs, start=1):
+                if total > 1:
+                    self.log(f"Batch item {index} of {total}")
+                self.log(f"Starting transcription for {config['input_path'].name}")
+                self.log(f"Selected output format: {config['format'].upper()}")
+                self.log(f"Selected model: {config['model_path'].name}")
+
+                self._run_process(
+                    [
+                        str(FFMPEG_PATH),
+                        "-y",
+                        "-i",
+                        str(config["input_path"]),
+                        "-vn",
+                        "-ac",
+                        "1",
+                        "-ar",
+                        "16000",
+                        str(config["audio_output"]),
+                    ],
+                    "ffmpeg",
+                )
+
+                whisper_command = [
+                    str(WHISPER_PATH),
+                    "-m",
+                    str(config["model_path"]),
+                    "-f",
                     str(config["audio_output"]),
-                ],
-                "ffmpeg",
-            )
+                    "-of",
+                    str(config["output_base"]),
+                ]
 
-            whisper_command = [
-                str(WHISPER_PATH),
-                "-m",
-                str(config["model_path"]),
-                "-f",
-                str(config["audio_output"]),
-                "-of",
-                str(config["output_base"]),
-            ]
+                if config["format"] == "txt":
+                    whisper_command.extend(["-otxt", "-nt"])
+                else:
+                    whisper_command.append("-osrt")
 
-            if config["format"] == "txt":
-                whisper_command.extend(["-otxt", "-nt"])
-            else:
-                whisper_command.append("-osrt")
+                if config["prompt"]:
+                    whisper_command.extend(["--prompt", config["prompt"]])
 
-            if config["prompt"]:
-                whisper_command.extend(["--prompt", config["prompt"]])
+                self._run_process(whisper_command, "whisper.cpp")
 
-            self._run_process(whisper_command, "whisper.cpp")
+                last_output = config["transcript_output"]
+                self.log(f"Success. Output file: {config['transcript_output']}")
 
-            self.log(f"Success. Output file: {config['transcript_output']}")
-            self.after(0, lambda: self._set_result_path(config["transcript_output"]))
+            self.after(0, lambda: self._set_result_path(last_output))
         except Exception as exc:
             self.log(f"ERROR: {exc}")
             self.after(0, lambda: self._set_result_path(None))
         finally:
             self.after(0, lambda: self.set_running_state(False))
 
-    def _build_run_config(self) -> dict[str, Path | str]:
-        input_raw = self.input_path_var.get().strip()
-        if not input_raw:
-            raise ValueError("Missing input file.")
-
-        input_path = Path(input_raw)
-        if not input_path.exists() or not input_path.is_file():
-            raise FileNotFoundError(f"Input file does not exist: {input_path}")
-
+    def _build_run_configs(self) -> list[dict[str, Path | str]]:
         if not FFMPEG_PATH.exists():
             raise FileNotFoundError(f"Missing dependency: {FFMPEG_PATH}")
 
@@ -432,27 +638,51 @@ class App(ctk.CTk):
         if not model_path.exists():
             raise FileNotFoundError(f"Missing model file: {model_path}")
 
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        audio_output = input_path.with_name(f"{input_path.stem}_audio_{timestamp}.wav")
-        output_base = audio_output.with_name(f"{audio_output.stem}_transcript_{timestamp}")
-
         selected_format_label = self.format_var.get().strip().lower()
         selected_format = FORMAT_OPTIONS.get(selected_format_label)
         if selected_format is None:
             raise ValueError(f"Unsupported output format: {selected_format_label}")
 
-        transcript_output = output_base.with_suffix(f".{selected_format}")
         prompt = self.prompt_var.get().strip()
+        input_paths = self._get_input_paths()
+        configs: list[dict[str, Path | str]] = []
 
-        return {
-            "input_path": input_path,
-            "format": selected_format,
-            "model_path": model_path,
-            "prompt": prompt,
-            "audio_output": audio_output,
-            "output_base": output_base,
-            "transcript_output": transcript_output,
-        }
+        for input_path in input_paths:
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            audio_output = input_path.with_name(f"{input_path.stem}_audio_{timestamp}.wav")
+            output_base = audio_output.with_name(f"{audio_output.stem}_transcript_{timestamp}")
+            transcript_output = output_base.with_suffix(f".{selected_format}")
+
+            configs.append(
+                {
+                    "input_path": input_path,
+                    "format": selected_format,
+                    "model_path": model_path,
+                    "prompt": prompt,
+                    "audio_output": audio_output,
+                    "output_base": output_base,
+                    "transcript_output": transcript_output,
+                }
+            )
+
+        return configs
+
+    def _get_input_paths(self) -> list[Path]:
+        if self.batch_selected_files:
+            missing = [path for path in self.batch_selected_files if not path.exists() or not path.is_file()]
+            if missing:
+                raise FileNotFoundError(f"Batch file does not exist: {missing[0]}")
+            return list(self.batch_selected_files)
+
+        input_raw = self.input_path_var.get().strip()
+        if not input_raw:
+            raise ValueError("Missing input file.")
+
+        input_path = Path(input_raw)
+        if not input_path.exists() or not input_path.is_file():
+            raise FileNotFoundError(f"Input file does not exist: {input_path}")
+
+        return [input_path]
 
     def _run_process(self, command: list[str], tool_name: str) -> None:
         self.log(f"Running {tool_name}: {' '.join(self._quote_argument(arg) for arg in command)}")
