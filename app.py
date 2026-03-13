@@ -38,6 +38,10 @@ MODEL_OPTIONS = [
         "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
     },
 ]
+FORMAT_OPTIONS = {
+    "srt subtitle": "srt",
+    "plain text": "txt",
+}
 SUPPORTED_MEDIA_TYPES = [
     ("Media files", "*.mp4 *.mkv *.mov *.avi *.mp3 *.wav *.m4a *.flac *.aac *.ogg *.webm"),
     ("All files", "*.*"),
@@ -59,7 +63,7 @@ class App(ctk.CTk):
         self.is_running = False
 
         self.input_path_var = tk.StringVar()
-        self.format_var = tk.StringVar(value="srt")
+        self.format_var = tk.StringVar(value="srt subtitle")
         self.model_var = tk.StringVar()
         self.prompt_var = tk.StringVar()
         self.download_model_var = tk.StringVar(value=MODEL_OPTIONS[0]["name"])
@@ -92,7 +96,7 @@ class App(ctk.CTk):
     def _build_controls(self) -> None:
         row = 0
 
-        ctk.CTkLabel(self.controls_frame, text="Input media").grid(
+        ctk.CTkLabel(self.controls_frame, text="Input file").grid(
             row=row, column=0, padx=12, pady=(12, 6), sticky="w"
         )
         ctk.CTkEntry(
@@ -111,7 +115,7 @@ class App(ctk.CTk):
         )
         self.format_menu = ctk.CTkOptionMenu(
             self.controls_frame,
-            values=["srt", "txt"],
+            values=list(FORMAT_OPTIONS.keys()),
             variable=self.format_var,
         )
         self.format_menu.grid(row=row, column=1, padx=12, pady=6, sticky="w")
@@ -432,9 +436,10 @@ class App(ctk.CTk):
         audio_output = input_path.with_name(f"{input_path.stem}_audio_{timestamp}.wav")
         output_base = audio_output.with_name(f"{audio_output.stem}_transcript_{timestamp}")
 
-        selected_format = self.format_var.get().strip().lower()
-        if selected_format not in {"srt", "txt"}:
-            raise ValueError(f"Unsupported output format: {selected_format}")
+        selected_format_label = self.format_var.get().strip().lower()
+        selected_format = FORMAT_OPTIONS.get(selected_format_label)
+        if selected_format is None:
+            raise ValueError(f"Unsupported output format: {selected_format_label}")
 
         transcript_output = output_base.with_suffix(f".{selected_format}")
         prompt = self.prompt_var.get().strip()
