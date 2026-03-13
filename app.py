@@ -4,6 +4,7 @@ import queue
 import subprocess
 import threading
 import urllib.request
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -16,8 +17,27 @@ APP_DIR = Path(__file__).resolve().parent
 FFMPEG_PATH = APP_DIR / "bin" / "ffmpeg.exe"
 WHISPER_PATH = APP_DIR / "bin" / "Vulkan" / "main64.exe"
 MODELS_DIR = APP_DIR / "models"
-DEFAULT_MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
-DEFAULT_MODEL_NAME = "ggml-base.en.bin"
+MODEL_REPO_URL = "https://huggingface.co/ggerganov/whisper.cpp/tree/main"
+MODEL_OPTIONS = [
+    {
+        "name": "ggml-base.en.bin",
+        "size": "148Mb",
+        "label": "balanced",
+        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
+    },
+    {
+        "name": "ggml-large-v3-turbo.bin",
+        "size": "1.62Gb",
+        "label": "precise",
+        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
+    },
+    {
+        "name": "ggml-tiny.en.bin",
+        "size": "77Mb",
+        "label": "fast",
+        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
+    },
+]
 SUPPORTED_MEDIA_TYPES = [
     ("Media files", "*.mp4 *.mkv *.mov *.avi *.mp3 *.wav *.m4a *.flac *.aac *.ogg *.webm"),
     ("All files", "*.*"),
@@ -42,7 +62,9 @@ class App(ctk.CTk):
         self.format_var = tk.StringVar(value="srt")
         self.model_var = tk.StringVar()
         self.prompt_var = tk.StringVar()
+        self.download_model_var = tk.StringVar(value=MODEL_OPTIONS[0]["name"])
         self.latest_result_path: Path | None = None
+        self.download_dialog: ctk.CTkToplevel | None = None
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -112,7 +134,7 @@ class App(ctk.CTk):
             self.controls_frame,
             text="Download",
             width=100,
-            command=self.download_default_model,
+            command=self.show_download_dialog,
         )
         self.download_model_button.grid(row=row, column=3, padx=(0, 12), pady=6, sticky="e")
 
@@ -199,22 +221,110 @@ class App(ctk.CTk):
         self.model_menu.configure(state=state)
         self.prompt_entry.configure(state=state)
 
-    def download_default_model(self) -> None:
+    def show_download_dialog(self) -> None:
         if self.is_running:
             return
 
+        if self.download_dialog is not None and self.download_dialog.winfo_exists():
+            self.download_dialog.focus()
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Download Whisper Model")
+        dialog.geometry("520x260")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.grid_columnconfigure(0, weight=1)
+        self.download_dialog = dialog
+
+        ctk.CTkLabel(
+            dialog,
+            text="Choose a model to download",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).grid(row=0, column=0, padx=20, pady=(20, 12), sticky="w")
+
+        options_frame = ctk.CTkFrame(dialog)
+        options_frame.grid(row=1, column=0, padx=20, pady=0, sticky="ew")
+        options_frame.grid_columnconfigure(0, weight=1)
+
+        for index, option in enumerate(MODEL_OPTIONS):
+            text = f"{option['name']} ({option['size']}) - {option['label']}"
+            ctk.CTkRadioButton(
+                options_frame,
+                text=text,
+                variable=self.download_model_var,
+                value=option["name"],
+            ).grid(row=index, column=0, padx=16, pady=8, sticky="w")
+
+        actions_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        actions_frame.grid(row=2, column=0, padx=20, pady=(16, 20), sticky="ew")
+        actions_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkButton(
+            actions_frame,
+            text="Download manually",
+            command=self.open_manual_download_page,
+            fg_color="transparent",
+            text_color=("blue", "#7fb3ff"),
+            hover_color=self.controls_frame.cget("fg_color"),
+            border_width=0,
+        ).grid(row=0, column=0, padx=0, pady=0, sticky="w")
+
+        ctk.CTkButton(
+            actions_frame,
+            text="Cancel",
+            width=100,
+            command=self.close_download_dialog,
+        ).grid(row=0, column=1, padx=(12, 12), pady=0, sticky="e")
+        ctk.CTkButton(
+            actions_frame,
+            text="Download",
+            width=100,
+            command=self.download_selected_model,
+        ).grid(row=0, column=2, padx=(0, 0), pady=0, sticky="e")
+
+        dialog.protocol("WM_DELETE_WINDOW", self.close_download_dialog)
+
+    def close_download_dialog(self) -> None:
+        if self.download_dialog is not None and self.download_dialog.winfo_exists():
+            self.download_dialog.destroy()
+        self.download_dialog = None
+
+    def open_manual_download_page(self) -> None:
+        try:
+            webbrowser.open(MODEL_REPO_URL)
+            self.log(f"Opened manual download page: {MODEL_REPO_URL}")
+        except OSError as exc:
+            self.log(f"ERROR: Could not open browser: {exc}")
+
+    def download_selected_model(self) -> None:
+        if self.is_running:
+            return
+
+        selected_name = self.download_model_var.get().strip()
+        selected_option = next((option for option in MODEL_OPTIONS if option["name"] == selected_name), None)
+        if selected_option is None:
+            self.log("ERROR: No download model selected.")
+            return
+
+        self.close_download_dialog()
         self.set_running_state(True)
-        worker = threading.Thread(target=self._download_default_model, daemon=True)
+        worker = threading.Thread(
+            target=self._download_model,
+            args=(selected_option,),
+            daemon=True,
+        )
         worker.start()
 
-    def _download_default_model(self) -> None:
-        destination = MODELS_DIR / DEFAULT_MODEL_NAME
+    def _download_model(self, model_option: dict[str, str]) -> None:
+        destination = MODELS_DIR / model_option["name"]
         temp_destination = destination.with_suffix(destination.suffix + ".part")
         try:
             MODELS_DIR.mkdir(parents=True, exist_ok=True)
-            self.log(f"Downloading model from {DEFAULT_MODEL_URL}")
+            self.log(f"Downloading model from {model_option['url']}")
             self.log(f"Saving model to {destination}")
-            self._download_file(DEFAULT_MODEL_URL, temp_destination)
+            self._download_file(model_option["url"], temp_destination)
             temp_destination.replace(destination)
             self.log(f"Model download complete: {destination.name}")
             self.after(0, self.reload_models)
