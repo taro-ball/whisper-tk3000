@@ -19,10 +19,10 @@ from tkinter import messagebox
 
 APP_DIR = Path(__file__).resolve().parent
 APP_NAME = "whisper-tk3000"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 APP_TITLE = "whisper-tk3000 audio to text transcriber"
 FFMPEG_PATH = APP_DIR / "bin" / "ffmpeg.exe"
-WHISPER_DIR = APP_DIR / "bin" / "Vulkan"
+WHISPER_DIR = APP_DIR / "bin" / "whisper.cpp"
 WHISPER_PATH = WHISPER_DIR / "whisper-cli.exe"
 MODELS_DIR = APP_DIR / "models"
 MODEL_REPO_URL = "https://huggingface.co/ggerganov/whisper.cpp/tree/main"
