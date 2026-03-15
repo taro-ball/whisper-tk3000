@@ -154,6 +154,7 @@ class App(ctk.CTk):
         self.reload_models()
         self.reload_gpu_options()
         self.after(100, self.flush_output)
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def _build_controls(self) -> None:
         row = 0
@@ -742,6 +743,18 @@ class App(ctk.CTk):
                 process.terminate()
             except OSError as exc:
                 self.log(f"WARNING: Failed to terminate the current process: {exc}")
+
+    def on_close(self) -> None:
+        with self.process_lock:
+            process = self.current_process
+
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+
+        self.destroy()
 
     def _execute_transcription(self) -> None:
         should_show_batch_progress = len(self.batch_selected_files) > 1
