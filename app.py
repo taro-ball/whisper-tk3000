@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 import queue
+import re
 import subprocess
 import threading
+import time
 import urllib.request
 import webbrowser
 from datetime import datetime
@@ -19,7 +22,8 @@ APP_NAME = "whisper-tk3000"
 APP_VERSION = "0.1.0"
 APP_TITLE = "whisper-tk3000 audio to text transcriber"
 FFMPEG_PATH = APP_DIR / "bin" / "ffmpeg.exe"
-WHISPER_PATH = APP_DIR / "bin" / "Vulkan" / "main64.exe"
+WHISPER_DIR = APP_DIR / "bin" / "Vulkan"
+WHISPER_PATH = WHISPER_DIR / "whisper-cli.exe"
 MODELS_DIR = APP_DIR / "models"
 MODEL_REPO_URL = "https://huggingface.co/ggerganov/whisper.cpp/tree/main"
 MODEL_OPTIONS = [
@@ -51,6 +55,10 @@ SUPPORTED_MEDIA_TYPES = [
     ("All files", "*.*"),
 ]
 WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+AUTO_GPU_LABEL = "Auto (best guess)"
+CPU_ONLY_LABEL = "CPU only"
+CPU_THREAD_COUNT = max(1, os.cpu_count() or 1)
+GPU_LINE_RE = re.compile(r"^ggml_vulkan:\s+(\d+)\s+=\s+(.*?)\s+\|\s+uma:\s+(\d+)\b")
 
 
 def build_hidden_subprocess_kwargs() -> dict[str, object]:
@@ -91,6 +99,7 @@ class App(ctk.CTk):
         self.input_path_var = tk.StringVar()
         self.format_var = tk.StringVar(value="srt subtitle")
         self.model_var = tk.StringVar()
+        self.gpu_var = tk.StringVar(value=AUTO_GPU_LABEL)
         self.prompt_var = tk.StringVar()
         self.download_model_var = tk.StringVar(value=MODEL_OPTIONS[0]["name"])
         self.latest_result_path: Path | None = None
@@ -101,6 +110,8 @@ class App(ctk.CTk):
         self.batch_file_rows: list[Path] = []
         self.batch_tree: ttk.Treeview | None = None
         self._suspend_input_path_tracking = False
+        self.gpu_devices: list[dict[str, object]] = []
+        self.gpu_options: dict[str, int | str | None] = {AUTO_GPU_LABEL: None, CPU_ONLY_LABEL: "cpu"}
 
         self.input_path_var.trace_add("write", self._on_input_path_changed)
 
@@ -140,6 +151,7 @@ class App(ctk.CTk):
         self.console.configure(state="disabled")
 
         self.reload_models()
+        self.reload_gpu_options()
         self.after(100, self.flush_output)
 
     def _build_controls(self) -> None:
@@ -195,6 +207,24 @@ class App(ctk.CTk):
             command=self.show_download_dialog,
         )
         self.download_model_button.grid(row=row, column=3, padx=(0, 12), pady=6, sticky="e")
+
+        row += 1
+        ctk.CTkLabel(self.controls_frame, text="GPU").grid(
+            row=row, column=0, padx=12, pady=6, sticky="w"
+        )
+        self.gpu_menu = ctk.CTkOptionMenu(
+            self.controls_frame,
+            values=[AUTO_GPU_LABEL],
+            variable=self.gpu_var,
+        )
+        self.gpu_menu.grid(row=row, column=1, padx=12, pady=6, sticky="ew")
+        self.refresh_gpu_button = ctk.CTkButton(
+            self.controls_frame,
+            text="Benchmark",
+            width=100,
+            command=self.run_benchmark,
+        )
+        self.refresh_gpu_button.grid(row=row, column=2, padx=(0, 12), pady=6, sticky="e")
 
         row += 1
         ctk.CTkLabel(self.controls_frame, text="Initial prompt").grid(
@@ -465,6 +495,23 @@ class App(ctk.CTk):
         if current not in models:
             self.model_var.set(models[0])
 
+    def reload_gpu_options(self) -> None:
+        devices = self._detect_vulkan_devices()
+        auto_label = self._build_auto_gpu_label(devices)
+        values = [auto_label, CPU_ONLY_LABEL]
+        options: dict[str, int | str | None] = {auto_label: None, CPU_ONLY_LABEL: "cpu"}
+
+        for display_index, device in enumerate(devices, start=1):
+            label = f"GPU {display_index} - {device['name']}"
+            values.append(label)
+            options[label] = int(device["index"])
+
+        current = self.gpu_var.get()
+        self.gpu_devices = devices
+        self.gpu_options = options
+        self.gpu_menu.configure(values=values)
+        self.gpu_var.set(current if current in options else auto_label)
+
     def set_running_state(self, running: bool) -> None:
         self.is_running = running
         state = "disabled" if running else "normal"
@@ -479,9 +526,11 @@ class App(ctk.CTk):
         self.browse_button.configure(state=state)
         self.batch_button.configure(state=state)
         self.refresh_models_button.configure(state=state)
+        self.refresh_gpu_button.configure(state=state)
         self.download_model_button.configure(state=state)
         self.format_menu.configure(state=state)
         self.model_menu.configure(state=state)
+        self.gpu_menu.configure(state=state)
         self.prompt_entry.configure(state=state)
         self.input_entry.configure(state=state)
 
@@ -639,6 +688,17 @@ class App(ctk.CTk):
         worker = threading.Thread(target=self._execute_transcription, daemon=True)
         worker.start()
 
+    def run_benchmark(self) -> None:
+        if self.is_running:
+            return
+
+        self.reload_gpu_options()
+        self.clear_console()
+        self._set_result_path(None)
+        self.set_running_state(True)
+        worker = threading.Thread(target=self._execute_benchmark, daemon=True)
+        worker.start()
+
     def cancel_transcription(self) -> None:
         if not self.transcription_running:
             return
@@ -715,6 +775,9 @@ class App(ctk.CTk):
                     else:
                         whisper_command.append("-osrt")
 
+                    if self.gpu_var.get().strip() == CPU_ONLY_LABEL:
+                        whisper_command.extend(["-ng", "-t", str(CPU_THREAD_COUNT)])
+
                     if config["prompt"]:
                         whisper_command.extend(["--prompt", config["prompt"]])
 
@@ -739,6 +802,89 @@ class App(ctk.CTk):
             self.cancel_requested = False
             if should_show_batch_progress:
                 self.after(0, self._restore_batch_input_summary)
+            self.after(0, lambda: self.set_running_state(False))
+
+    def _execute_benchmark(self) -> None:
+        audio_output: Path | None = None
+        benchmark_outputs: list[Path] = []
+        try:
+            configs = self._build_run_configs()
+            config = configs[0]
+            input_path = Path(config["input_path"])
+            model_path = Path(config["model_path"])
+            prompt = str(config["prompt"])
+            timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
+            audio_output = self._build_unique_output_path(
+                input_path,
+                ".wav",
+                stem=f"{input_path.stem}{timestamp}.benchmark",
+            )
+
+            self.log(f"Benchmarking first 60 seconds of {input_path.name}")
+            self._run_process(
+                [
+                    str(FFMPEG_PATH),
+                    "-y",
+                    "-i",
+                    str(input_path),
+                    "-t",
+                    "60",
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "16000",
+                    str(audio_output),
+                ],
+                "ffmpeg",
+            )
+
+            option_labels = [CPU_ONLY_LABEL]
+            option_labels.extend(
+                label
+                for label in self.gpu_options.keys()
+                if label != CPU_ONLY_LABEL and not label.startswith(AUTO_GPU_LABEL)
+            )
+            for label in option_labels:
+                transcript_output = self._build_unique_output_path(
+                    input_path,
+                    ".txt",
+                    stem=f"{input_path.stem}{timestamp}.{self._slugify_label(label)}.benchmark",
+                )
+                output_base = transcript_output.with_suffix("")
+                benchmark_outputs.append(transcript_output)
+
+                whisper_command = [
+                    str(WHISPER_PATH),
+                    "-m",
+                    str(model_path),
+                    "-f",
+                    str(audio_output),
+                    "-of",
+                    str(output_base),
+                    "-pp",
+                    "-otxt",
+                    "-nt",
+                ]
+                if self._is_cpu_selection(label):
+                    whisper_command.extend(["-ng", "-t", str(CPU_THREAD_COUNT)])
+                if prompt:
+                    whisper_command.extend(["--prompt", prompt])
+
+                self.log(f"Benchmarking {label}")
+                elapsed_seconds = self._run_benchmark_process(whisper_command, label)
+                self.log(f"{elapsed_seconds:.2f} seconds")
+        except Exception as exc:
+            self.log(f"ERROR: {exc}")
+        finally:
+            if audio_output is not None:
+                self._cleanup_audio_output(audio_output)
+            for output_path in benchmark_outputs:
+                if output_path.exists():
+                    try:
+                        output_path.unlink()
+                    except OSError:
+                        pass
             self.after(0, lambda: self.set_running_state(False))
 
     def _build_run_configs(self) -> list[dict[str, Path | str]]:
@@ -827,6 +973,9 @@ class App(ctk.CTk):
         self._raise_if_cancelled()
         self.log(f"Running {tool_name}: {' '.join(self._quote_argument(arg) for arg in command)}")
         output_lines: list[str] = []
+        env = None
+        if tool_name == "whisper.cpp":
+            env = self._build_whisper_env(self.gpu_var.get().strip())
         try:
             process = subprocess.Popen(
                 command,
@@ -836,6 +985,7 @@ class App(ctk.CTk):
                 encoding="utf-8",
                 errors="replace",
                 shell=False,
+                env=env,
                 **build_hidden_subprocess_kwargs(),
             )
         except OSError as exc:
@@ -867,6 +1017,112 @@ class App(ctk.CTk):
             raise RuntimeError(f"{tool_name} exited with code {exit_code}")
 
         self.log(f"{tool_name} finished successfully.")
+
+    def _run_benchmark_process(self, command: list[str], selection_label: str) -> float:
+        env = self._build_whisper_env(selection_label)
+        started_at = time.perf_counter()
+        try:
+            process = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                shell=False,
+                env=env,
+                **build_hidden_subprocess_kwargs(),
+            )
+        except OSError as exc:
+            raise RuntimeError(f"Failed to start benchmark for {selection_label}: {exc}") from exc
+
+        elapsed_seconds = time.perf_counter() - started_at
+        if process.returncode != 0:
+            raise RuntimeError(f"Benchmark failed for {selection_label} with code {process.returncode}")
+
+        return elapsed_seconds
+
+    def _detect_vulkan_devices(self) -> list[dict[str, object]]:
+        if not WHISPER_PATH.exists():
+            return []
+
+        try:
+            result = subprocess.run(
+                [str(WHISPER_PATH), "--help"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                shell=False,
+                **build_hidden_subprocess_kwargs(),
+            )
+        except OSError as exc:
+            self.log(f"WARNING: Could not detect Vulkan GPUs: {exc}")
+            return []
+
+        devices: list[dict[str, object]] = []
+        for line in result.stdout.splitlines():
+            match = GPU_LINE_RE.match(line.strip())
+            if match is None:
+                continue
+            devices.append(
+                {
+                    "index": int(match.group(1)),
+                    "name": match.group(2).strip(),
+                    "uma": int(match.group(3)),
+                }
+            )
+
+        return devices
+
+    def _guess_best_gpu_index(self) -> int | None:
+        if not self.gpu_devices:
+            return None
+
+        for device in self.gpu_devices:
+            if int(device["uma"]) == 0:
+                return int(device["index"])
+
+        return int(self.gpu_devices[0]["index"])
+
+    def _build_whisper_env(self, selection_label: str) -> dict[str, str]:
+        env = dict(os.environ)
+        selected_gpu = self.gpu_options.get(selection_label)
+        if selected_gpu == "cpu":
+            return env
+        if selected_gpu is None:
+            selected_gpu = self._guess_best_gpu_index()
+        if isinstance(selected_gpu, int):
+            env["GGML_VK_VISIBLE_DEVICES"] = str(selected_gpu)
+        return env
+
+    def _build_auto_gpu_label(self, devices: list[dict[str, object]]) -> str:
+        best_index = None
+        best_name = None
+
+        for device in devices:
+            if int(device["uma"]) == 0:
+                best_index = int(device["index"])
+                best_name = str(device["name"])
+                break
+
+        if best_index is None and devices:
+            best_index = int(devices[0]["index"])
+            best_name = str(devices[0]["name"])
+
+        if best_index is None or best_name is None:
+            return AUTO_GPU_LABEL
+
+        return f"{AUTO_GPU_LABEL} - GPU {best_index + 1} - {best_name}"
+
+    def _is_cpu_selection(self, selection_label: str) -> bool:
+        return self.gpu_options.get(selection_label) == "cpu"
+
+    @staticmethod
+    def _slugify_label(label: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+        return slug or "benchmark"
 
     def _raise_if_cancelled(self) -> None:
         if self.cancel_requested:
