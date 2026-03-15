@@ -746,6 +746,10 @@ class App(ctk.CTk):
                         [
                             str(FFMPEG_PATH),
                             "-y",
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-stats",
                             "-i",
                             str(config["input_path"]),
                             "-vn",
@@ -767,6 +771,7 @@ class App(ctk.CTk):
                         str(config["audio_output"]),
                         "-of",
                         str(config["output_base"]),
+                        "-np",
                         "-pp",
                     ]
 
@@ -825,6 +830,10 @@ class App(ctk.CTk):
                 [
                     str(FFMPEG_PATH),
                     "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-stats",
                     "-i",
                     str(input_path),
                     "-t",
@@ -862,6 +871,7 @@ class App(ctk.CTk):
                     str(audio_output),
                     "-of",
                     str(output_base),
+                    "-np",
                     "-pp",
                     "-otxt",
                     "-nt",
