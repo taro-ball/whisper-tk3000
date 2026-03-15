@@ -1,7 +1,7 @@
 # Whisper Transcriber GUI
 
-Windows desktop app for transcribing audio to text with `whisper.cpp`.
-
+Desktop app for local, offline audio transcription with whisper.cpp.
+Currently supports Windows. Uses Vulkan for GPU acceleration, so it does not require CUDA and works on most modern GPUs with Vulkan support, including AMD, NVIDIA, and Intel.
 
 ## Dependencies
 

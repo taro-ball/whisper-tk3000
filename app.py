@@ -56,7 +56,7 @@ SUPPORTED_MEDIA_TYPES = [
 ]
 WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 AUTO_GPU_LABEL = "Auto (best guess)"
-CPU_ONLY_LABEL = "CPU only"
+CPU_ONLY_LABEL = "CPU only (usually slowest)"
 CPU_THREAD_COUNT = max(1, os.cpu_count() or 1)
 GPU_LINE_RE = re.compile(r"^ggml_vulkan:\s+(\d+)\s+=\s+(.*?)\s+\|\s+uma:\s+(\d+)\b")
 
@@ -498,13 +498,16 @@ class App(ctk.CTk):
     def reload_gpu_options(self) -> None:
         devices = self._detect_vulkan_devices()
         auto_label = self._build_auto_gpu_label(devices)
-        values = [auto_label, CPU_ONLY_LABEL]
-        options: dict[str, int | str | None] = {auto_label: None, CPU_ONLY_LABEL: "cpu"}
+        values = [auto_label]
+        options: dict[str, int | str | None] = {auto_label: None}
 
         for display_index, device in enumerate(devices, start=1):
             label = f"GPU {display_index} - {device['name']}"
             values.append(label)
             options[label] = int(device["index"])
+
+        values.append(CPU_ONLY_LABEL)
+        options[CPU_ONLY_LABEL] = "cpu"
 
         current = self.gpu_var.get()
         self.gpu_devices = devices
