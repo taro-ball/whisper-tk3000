@@ -101,6 +101,7 @@ class App(ctk.CTk):
         self.model_var = tk.StringVar()
         self.gpu_var = tk.StringVar(value=AUTO_GPU_LABEL)
         self.prompt_var = tk.StringVar()
+        self.debug_var = tk.BooleanVar(value=False)
         self.download_model_var = tk.StringVar(value=MODEL_OPTIONS[0]["name"])
         self.latest_result_path: Path | None = None
         self.download_dialog: ctk.CTkToplevel | None = None
@@ -247,8 +248,9 @@ class App(ctk.CTk):
         self.run_button.grid(row=row, column=0, padx=12, pady=(8, 12), sticky="w")
 
         self.result_row = ctk.CTkFrame(self.controls_frame, fg_color="transparent")
-        self.result_row.grid(row=row, column=1, columnspan=2, padx=12, pady=(8, 12), sticky="ew")
+        self.result_row.grid(row=row, column=1, columnspan=3, padx=12, pady=(8, 12), sticky="ew")
         self.result_row.grid_columnconfigure(1, weight=1)
+        self.result_row.grid_columnconfigure(2, weight=0)
         self.result_label = ctk.CTkLabel(self.result_row, text="Transcribed text:")
         self.result_label.grid(row=0, column=0, padx=(0, 8), pady=0, sticky="w")
         self.result_link_font = ctk.CTkFont(underline=True)
@@ -268,6 +270,19 @@ class App(ctk.CTk):
             cursor="hand2",
         )
         self.result_link_button.grid(row=0, column=1, padx=0, pady=0, sticky="w")
+        self.debug_checkbox = ctk.CTkCheckBox(
+            self.result_row,
+            text="debug",
+            variable=self.debug_var,
+            onvalue=True,
+            offvalue=False,
+            width=56,
+            checkbox_width=14,
+            checkbox_height=14,
+            border_width=2,
+            font=ctk.CTkFont(size=12),
+        )
+        self.debug_checkbox.grid(row=0, column=2, padx=(12, 0), pady=0, sticky="e")
         self._set_result_path(None)
 
     def append_output(self, text: str) -> None:
@@ -536,6 +551,7 @@ class App(ctk.CTk):
         self.gpu_menu.configure(state=state)
         self.prompt_entry.configure(state=state)
         self.input_entry.configure(state=state)
+        self.debug_checkbox.configure(state=state)
 
     def show_download_dialog(self) -> None:
         if self.is_running:
@@ -729,6 +745,7 @@ class App(ctk.CTk):
 
     def _execute_transcription(self) -> None:
         should_show_batch_progress = len(self.batch_selected_files) > 1
+        debug_enabled = self.debug_var.get()
         try:
             configs = self._build_run_configs()
             total = len(configs)
@@ -742,17 +759,21 @@ class App(ctk.CTk):
                 if total > 1:
                     self.log(f"========================= Batch item {index} of {total}")
                 self.log(f"========================= processing {config['input_path'].name} =========================\n")
-                self.log(f"Selected output format: {config['format'].upper()}")
-                self.log(f"Selected model: {config['model_path'].name}")
+                if debug_enabled:
+                    self.log(f"Selected output format: {config['format'].upper()}")
+                    self.log(f"Selected model: {config['model_path'].name}")
                 try:
-                    self._run_process(
+                    ffmpeg_command = [
+                        str(FFMPEG_PATH),
+                        "-y",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                    ]
+                    if debug_enabled:
+                        ffmpeg_command.append("-stats")
+                    ffmpeg_command.extend(
                         [
-                            str(FFMPEG_PATH),
-                            "-y",
-                            "-hide_banner",
-                            "-loglevel",
-                            "error",
-                            "-stats",
                             "-i",
                             str(config["input_path"]),
                             "-vn",
@@ -761,9 +782,9 @@ class App(ctk.CTk):
                             "-ar",
                             "16000",
                             str(config["audio_output"]),
-                        ],
-                        "ffmpeg",
+                        ]
                     )
+                    self._run_process(ffmpeg_command, "ffmpeg", log_details=debug_enabled)
                     self._raise_if_cancelled()
 
                     whisper_command = [
@@ -775,12 +796,14 @@ class App(ctk.CTk):
                         "-of",
                         str(config["output_base"]),
                         "-np",
-                        "-pp",
                     ]
 
                     if config["format"] == "txt":
+                        whisper_command.append("-pp")
                         whisper_command.extend(["-otxt", "-nt"])
                     else:
+                        if debug_enabled:
+                            whisper_command.append("-pp")
                         whisper_command.append("-osrt")
 
                     if self.gpu_var.get().strip() == CPU_ONLY_LABEL:
@@ -789,14 +812,14 @@ class App(ctk.CTk):
                     if config["prompt"]:
                         whisper_command.extend(["--prompt", config["prompt"]])
 
-                    self._run_process(whisper_command, "whisper.cpp")
+                    self._run_process(whisper_command, "whisper.cpp", log_details=debug_enabled)
 
                     last_output = config["transcript_output"]
                     self.log(f"Success. Output file: {config['transcript_output']}")
                     if should_show_batch_progress:
                         self.after(0, lambda completed=index, count=total: self._show_batch_progress(completed, count))
                 finally:
-                    self._cleanup_audio_output(config["audio_output"])
+                    self._cleanup_audio_output(config["audio_output"], log_removal=debug_enabled)
 
             self.after(0, lambda: self._set_result_path(last_output))
         except TranscriptionCancelled:
@@ -982,9 +1005,10 @@ class App(ctk.CTk):
 
         return candidate
 
-    def _run_process(self, command: list[str], tool_name: str) -> None:
+    def _run_process(self, command: list[str], tool_name: str, log_details: bool = True) -> None:
         self._raise_if_cancelled()
-        self.log(f"Running {tool_name}: {' '.join(self._quote_argument(arg) for arg in command)}")
+        if log_details:
+            self.log(f"Running {tool_name}: {' '.join(self._quote_argument(arg) for arg in command)}")
         output_lines: list[str] = []
         env = None
         if tool_name == "whisper.cpp":
@@ -1029,7 +1053,8 @@ class App(ctk.CTk):
                     raise RuntimeError("ffmpeg reported an invalid duration for the selected input.")
             raise RuntimeError(f"{tool_name} exited with code {exit_code}")
 
-        self.log(f"{tool_name} finished successfully.")
+        if log_details:
+            self.log(f"{tool_name} finished successfully.")
 
     def _run_benchmark_process(self, command: list[str], selection_label: str) -> float:
         env = self._build_whisper_env(selection_label)
@@ -1141,12 +1166,13 @@ class App(ctk.CTk):
         if self.cancel_requested:
             raise TranscriptionCancelled()
 
-    def _cleanup_audio_output(self, audio_output: Path) -> None:
+    def _cleanup_audio_output(self, audio_output: Path, log_removal: bool = True) -> None:
         if not audio_output.exists():
             return
         try:
             audio_output.unlink()
-            self.log(f"Removed temporary audio file: {audio_output}")
+            if log_removal:
+                self.log(f"Removed temporary audio file: {audio_output}")
         except OSError as exc:
             self.log(f"WARNING: Could not remove temporary audio file {audio_output}: {exc}")
 
