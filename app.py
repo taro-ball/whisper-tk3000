@@ -737,8 +737,8 @@ class App(ctk.CTk):
             for index, config in enumerate(configs, start=1):
                 self._raise_if_cancelled()
                 if total > 1:
-                    self.log(f"Batch item {index} of {total}")
-                self.log(f"Starting transcription for {config['input_path'].name}")
+                    self.log(f"========================= Batch item {index} of {total}")
+                self.log(f"========================= processing {config['input_path'].name} =========================\n")
                 self.log(f"Selected output format: {config['format'].upper()}")
                 self.log(f"Selected model: {config['model_path'].name}")
                 try:
