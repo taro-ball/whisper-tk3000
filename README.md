@@ -3,6 +3,8 @@
 Desktop app for local, offline audio transcription with whisper.cpp.
 Currently supports Windows. Uses Vulkan for GPU acceleration, so it does not require CUDA and works on most modern GPUs with Vulkan support, including AMD, NVIDIA, and Intel.
 
+![App screenshot](docs/images/screenshot.jpg)
+
 ## Dependencies
 
 - ffmpeg: `bin/ffmpeg.exe`
