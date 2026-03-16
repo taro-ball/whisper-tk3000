@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.request
 import webbrowser
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -26,6 +27,19 @@ WHISPER_DIR = APP_DIR / "bin" / "whisper.cpp"
 WHISPER_PATH = WHISPER_DIR / "whisper-cli.exe"
 MODELS_DIR = APP_DIR / "models"
 MODEL_REPO_URL = "https://huggingface.co/ggerganov/whisper.cpp/tree/main"
+MEDIA_SUFFIXES = (
+    ".mp4",
+    ".mkv",
+    ".mov",
+    ".avi",
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".flac",
+    ".aac",
+    ".ogg",
+    ".webm",
+)
 MODEL_OPTIONS = [
     {
         "name": "ggml-base.en.bin",
@@ -51,7 +65,7 @@ FORMAT_OPTIONS = {
     "plain text": "txt",
 }
 SUPPORTED_MEDIA_TYPES = [
-    ("Media files", "*.mp4 *.mkv *.mov *.avi *.mp3 *.wav *.m4a *.flac *.aac *.ogg *.webm"),
+    ("Media files", " ".join(f"*{suffix}" for suffix in MEDIA_SUFFIXES)),
     ("All files", "*.*"),
 ]
 WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -111,6 +125,7 @@ class App(ctk.CTk):
         self.batch_file_rows: list[Path] = []
         self.batch_tree: ttk.Treeview | None = None
         self._suspend_input_path_tracking = False
+        self._is_closing = False
         self.gpu_devices: list[dict[str, object]] = []
         self.gpu_options: dict[str, int | str | None] = {AUTO_GPU_LABEL: None, CPU_ONLY_LABEL: "cpu"}
 
@@ -434,12 +449,12 @@ class App(ctk.CTk):
         self.close_batch_dialog()
 
     def _find_media_files(self, folder: Path) -> list[Path]:
-        patterns = ["*.mp4", "*.mkv", "*.mov", "*.avi", "*.mp3", "*.wav", "*.m4a", "*.flac", "*.aac", "*.ogg", "*.webm"]
-        media_files: list[Path] = []
-        for pattern in patterns:
-            media_files.extend(path for path in folder.glob(pattern) if path.is_file())
-            media_files.extend(path for path in folder.glob(pattern.upper()) if path.is_file())
-        return sorted(set(media_files), key=lambda path: path.name.lower())
+        media_files = [
+            path
+            for path in folder.iterdir()
+            if path.is_file() and path.suffix.lower() in MEDIA_SUFFIXES
+        ]
+        return sorted(media_files, key=lambda path: path.name.lower())
 
     def _on_batch_tree_click(self, event: tk.Event) -> str | None:
         if self.batch_tree is None:
@@ -542,17 +557,20 @@ class App(ctk.CTk):
                 command=self.run_transcription,
                 state=state,
             )
-        self.browse_button.configure(state=state)
-        self.batch_button.configure(state=state)
-        self.refresh_models_button.configure(state=state)
-        self.refresh_gpu_button.configure(state=state)
-        self.download_model_button.configure(state=state)
-        self.format_menu.configure(state=state)
-        self.model_menu.configure(state=state)
-        self.gpu_menu.configure(state=state)
-        self.prompt_entry.configure(state=state)
-        self.input_entry.configure(state=state)
-        self.debug_checkbox.configure(state=state)
+        for widget in (
+            self.browse_button,
+            self.batch_button,
+            self.refresh_models_button,
+            self.refresh_gpu_button,
+            self.download_model_button,
+            self.format_menu,
+            self.model_menu,
+            self.gpu_menu,
+            self.prompt_entry,
+            self.input_entry,
+            self.debug_checkbox,
+        ):
+            widget.configure(state=state)
 
     def show_download_dialog(self) -> None:
         if self.is_running:
@@ -679,8 +697,8 @@ class App(ctk.CTk):
             self._download_file(model_option["url"], temp_destination)
             temp_destination.replace(destination)
             self.log(f"Model download complete: {destination.name}")
-            self.after(0, self.reload_models)
-            self.after(0, lambda: self.model_var.set(destination.name))
+            self._schedule_ui_update(self.reload_models)
+            self._schedule_ui_update(lambda: self.model_var.set(destination.name))
         except Exception as exc:
             self.log(f"ERROR: Failed to download model: {exc}")
             if temp_destination.exists():
@@ -689,7 +707,7 @@ class App(ctk.CTk):
                 except OSError:
                     pass
         finally:
-            self.after(0, lambda: self.set_running_state(False))
+            self._schedule_ui_update(lambda: self.set_running_state(False))
 
     def clear_console(self) -> None:
         self.console.configure(state="normal")
@@ -745,6 +763,7 @@ class App(ctk.CTk):
                 self.log(f"WARNING: Failed to terminate the current process: {exc}")
 
     def on_close(self) -> None:
+        self._is_closing = True
         with self.process_lock:
             process = self.current_process
 
@@ -765,7 +784,7 @@ class App(ctk.CTk):
             last_output: Path | None = None
 
             if should_show_batch_progress:
-                self.after(0, lambda: self._show_batch_progress(0, total))
+                self._schedule_ui_update(lambda: self._show_batch_progress(1, total))
 
             for index, config in enumerate(configs, start=1):
                 self._raise_if_cancelled()
@@ -776,77 +795,39 @@ class App(ctk.CTk):
                     self.log(f"Selected output format: {config['format'].upper()}")
                     self.log(f"Selected model: {config['model_path'].name}")
                 try:
-                    ffmpeg_command = [
-                        str(FFMPEG_PATH),
-                        "-y",
-                        "-hide_banner",
-                        "-loglevel",
-                        "error",
-                    ]
-                    if debug_enabled:
-                        ffmpeg_command.append("-stats")
-                    ffmpeg_command.extend(
-                        [
-                            "-i",
-                            str(config["input_path"]),
-                            "-vn",
-                            "-ac",
-                            "1",
-                            "-ar",
-                            "16000",
-                            str(config["audio_output"]),
-                        ]
-                    )
+                    ffmpeg_command = self._build_ffmpeg_command(config, include_stats=debug_enabled)
                     self._run_process(ffmpeg_command, "ffmpeg", log_details=debug_enabled)
                     self._raise_if_cancelled()
 
-                    whisper_command = [
-                        str(WHISPER_PATH),
-                        "-m",
-                        str(config["model_path"]),
-                        "-f",
-                        str(config["audio_output"]),
-                        "-of",
-                        str(config["output_base"]),
-                        "-np",
-                    ]
-
-                    if config["format"] == "txt":
-                        whisper_command.append("-pp")
-                        whisper_command.extend(["-otxt", "-nt"])
-                    else:
-                        if debug_enabled:
-                            whisper_command.append("-pp")
-                        whisper_command.append("-osrt")
-
-                    if self.gpu_var.get().strip() == CPU_ONLY_LABEL:
-                        whisper_command.extend(["-ng", "-t", str(CPU_THREAD_COUNT)])
-
-                    if config["prompt"]:
-                        whisper_command.extend(["--prompt", config["prompt"]])
-
+                    whisper_command = self._build_whisper_command(
+                        config,
+                        self.gpu_var.get().strip(),
+                        debug_enabled=debug_enabled,
+                    )
                     self._run_process(whisper_command, "whisper.cpp", log_details=debug_enabled)
 
                     last_output = config["transcript_output"]
                     self.log(f"Success. Output file: {config['transcript_output']}")
                     if should_show_batch_progress:
-                        self.after(0, lambda completed=index, count=total: self._show_batch_progress(completed, count))
+                        self._schedule_ui_update(
+                            lambda completed=index, count=total: self._show_batch_progress(completed, count)
+                        )
                 finally:
                     self._cleanup_audio_output(config["audio_output"], log_removal=debug_enabled)
 
-            self.after(0, lambda: self._set_result_path(last_output))
+            self._schedule_ui_update(lambda: self._set_result_path(last_output))
         except TranscriptionCancelled:
             self.log("Transcription cancelled.")
-            self.after(0, lambda: self._set_result_path(None))
+            self._schedule_ui_update(lambda: self._set_result_path(None))
         except Exception as exc:
             self.log(f"ERROR: {exc}")
-            self.after(0, lambda: self._set_result_path(None))
+            self._schedule_ui_update(lambda: self._set_result_path(None))
         finally:
             self.transcription_running = False
             self.cancel_requested = False
             if should_show_batch_progress:
-                self.after(0, self._restore_batch_input_summary)
-            self.after(0, lambda: self.set_running_state(False))
+                self._schedule_ui_update(self._restore_batch_input_summary)
+            self._schedule_ui_update(lambda: self.set_running_state(False))
 
     def _execute_benchmark(self) -> None:
         audio_output: Path | None = None
@@ -865,27 +846,7 @@ class App(ctk.CTk):
             )
 
             self.log(f"Benchmarking first 60 seconds of {input_path.name}")
-            self._run_process(
-                [
-                    str(FFMPEG_PATH),
-                    "-y",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-stats",
-                    "-i",
-                    str(input_path),
-                    "-t",
-                    "60",
-                    "-vn",
-                    "-ac",
-                    "1",
-                    "-ar",
-                    "16000",
-                    str(audio_output),
-                ],
-                "ffmpeg",
-            )
+            self._run_process(self._build_ffmpeg_command(config, audio_output=audio_output, duration_seconds=60), "ffmpeg")
 
             option_labels = [CPU_ONLY_LABEL]
             option_labels.extend(
@@ -902,24 +863,18 @@ class App(ctk.CTk):
                 output_base = transcript_output.with_suffix("")
                 benchmark_outputs.append(transcript_output)
 
-                whisper_command = [
-                    str(WHISPER_PATH),
-                    "-m",
-                    str(model_path),
-                    "-f",
-                    str(audio_output),
-                    "-of",
-                    str(output_base),
-                    "-np",
-                    "-pp",
-                    "-otxt",
-                    "-nt",
-                ]
-                if self._is_cpu_selection(label):
-                    whisper_command.extend(["-ng", "-t", str(CPU_THREAD_COUNT)])
-                if prompt:
-                    whisper_command.extend(["--prompt", prompt])
-
+                whisper_command = self._build_whisper_command(
+                    {
+                        "model_path": model_path,
+                        "audio_output": audio_output,
+                        "output_base": output_base,
+                        "prompt": prompt,
+                        "format": "txt",
+                    },
+                    label,
+                    debug_enabled=True,
+                    force_txt=True,
+                )
                 self.log(f"Benchmarking {label}")
                 elapsed_seconds = self._run_benchmark_process(whisper_command, label)
                 self.log(f"{elapsed_seconds:.2f} seconds")
@@ -934,7 +889,7 @@ class App(ctk.CTk):
                         output_path.unlink()
                     except OSError:
                         pass
-            self.after(0, lambda: self.set_running_state(False))
+            self._schedule_ui_update(lambda: self.set_running_state(False))
 
     def _build_run_configs(self) -> list[dict[str, Path | str]]:
         if not FFMPEG_PATH.exists():
@@ -1017,6 +972,74 @@ class App(ctk.CTk):
             index += 1
 
         return candidate
+
+    def _build_ffmpeg_command(
+        self,
+        config: dict[str, Path | str],
+        *,
+        audio_output: Path | None = None,
+        include_stats: bool = True,
+        duration_seconds: int | None = None,
+    ) -> list[str]:
+        command = [
+            str(FFMPEG_PATH),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+        ]
+        if include_stats:
+            command.append("-stats")
+        command.extend(["-i", str(config["input_path"])])
+        if duration_seconds is not None:
+            command.extend(["-t", str(duration_seconds)])
+        command.extend(
+            [
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                str(audio_output or config["audio_output"]),
+            ]
+        )
+        return command
+
+    def _build_whisper_command(
+        self,
+        config: dict[str, Path | str],
+        selection_label: str,
+        *,
+        debug_enabled: bool,
+        force_txt: bool = False,
+    ) -> list[str]:
+        output_format = "txt" if force_txt else str(config["format"])
+        command = [
+            str(WHISPER_PATH),
+            "-m",
+            str(config["model_path"]),
+            "-f",
+            str(config["audio_output"]),
+            "-of",
+            str(config["output_base"]),
+            "-np",
+        ]
+
+        if output_format == "txt":
+            command.extend(["-pp", "-otxt", "-nt"])
+        else:
+            if debug_enabled:
+                command.append("-pp")
+            command.append("-osrt")
+
+        if self._is_cpu_selection(selection_label):
+            command.extend(["-ng", "-t", str(CPU_THREAD_COUNT)])
+
+        prompt = str(config["prompt"])
+        if prompt:
+            command.extend(["--prompt", prompt])
+
+        return command
 
     def _run_process(self, command: list[str], tool_name: str, log_details: bool = True) -> None:
         self._raise_if_cancelled()
@@ -1128,14 +1151,10 @@ class App(ctk.CTk):
         return devices
 
     def _guess_best_gpu_index(self) -> int | None:
-        if not self.gpu_devices:
+        preferred_device = self._get_preferred_gpu_device(self.gpu_devices)
+        if preferred_device is None:
             return None
-
-        for device in self.gpu_devices:
-            if int(device["uma"]) == 0:
-                return int(device["index"])
-
-        return int(self.gpu_devices[0]["index"])
+        return int(preferred_device["index"])
 
     def _build_whisper_env(self, selection_label: str) -> dict[str, str]:
         env = dict(os.environ)
@@ -1149,26 +1168,25 @@ class App(ctk.CTk):
         return env
 
     def _build_auto_gpu_label(self, devices: list[dict[str, object]]) -> str:
-        best_index = None
-        best_name = None
-
-        for device in devices:
-            if int(device["uma"]) == 0:
-                best_index = int(device["index"])
-                best_name = str(device["name"])
-                break
-
-        if best_index is None and devices:
-            best_index = int(devices[0]["index"])
-            best_name = str(devices[0]["name"])
-
-        if best_index is None or best_name is None:
+        preferred_device = self._get_preferred_gpu_device(devices)
+        if preferred_device is None:
             return AUTO_GPU_LABEL
 
+        best_index = int(preferred_device["index"])
+        best_name = str(preferred_device["name"])
         return f"{AUTO_GPU_LABEL} - GPU {best_index + 1} - {best_name}"
 
     def _is_cpu_selection(self, selection_label: str) -> bool:
         return self.gpu_options.get(selection_label) == "cpu"
+
+    @staticmethod
+    def _get_preferred_gpu_device(devices: list[dict[str, object]]) -> dict[str, object] | None:
+        if not devices:
+            return None
+        for device in devices:
+            if int(device["uma"]) == 0:
+                return device
+        return devices[0]
 
     @staticmethod
     def _slugify_label(label: str) -> str:
@@ -1189,23 +1207,30 @@ class App(ctk.CTk):
         except OSError as exc:
             self.log(f"WARNING: Could not remove temporary audio file {audio_output}: {exc}")
 
-    def _download_file(self, url: str, destination: Path) -> None:
-        class DownloadProgressBar:
-            def __init__(self, app: App) -> None:
-                self.app = app
-                self.last_percent = -1
+    def _schedule_ui_update(self, callback: Callable[[], None]) -> None:
+        if self._is_closing:
+            return
+        try:
+            if self.winfo_exists():
+                self.after(0, callback)
+        except tk.TclError:
+            pass
 
-            def __call__(self, blocks: int, block_size: int, total_size: int) -> None:
-                if total_size <= 0:
-                    return
-                downloaded = min(blocks * block_size, total_size)
-                percent = int((downloaded * 100) / total_size)
-                if percent != self.last_percent and percent % 10 == 0:
-                    self.last_percent = percent
-                    self.app.log(f"Download progress: {percent}%")
+    def _download_file(self, url: str, destination: Path) -> None:
+        last_percent = -1
+
+        def report_progress(blocks: int, block_size: int, total_size: int) -> None:
+            nonlocal last_percent
+            if total_size <= 0:
+                return
+            downloaded = min(blocks * block_size, total_size)
+            percent = int((downloaded * 100) / total_size)
+            if percent != last_percent and percent % 10 == 0:
+                last_percent = percent
+                self.log(f"Download progress: {percent}%")
 
         try:
-            urllib.request.urlretrieve(url, destination, DownloadProgressBar(self))
+            urllib.request.urlretrieve(url, destination, report_progress)
         except OSError as exc:
             raise RuntimeError(f"Could not download model: {exc}") from exc
 
