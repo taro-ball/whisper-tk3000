@@ -647,13 +647,12 @@ class App(ctk.CTk):
             f"{APP_NAME}\n"
             f"Version {APP_VERSION}\n"
             "https://github.com/taro-ball/whisper-tk3000\n\n"
-            "Desktop app for converting media to WAV and transcribing it with whisper.cpp.\n"
+            "Desktop app for transcribing audio to text with whisper.cpp.\n"
             "Dedicated to my wife, who's love for science always inspires me.\n\n"
             "Credits\n"
-            "- whisper.cpp for transcription\n"
-            "- ffmpeg for media conversion\n"
-            "- Model downloads from the whisper.cpp Hugging Face repository\n\n"
-            f"Models: {MODEL_REPO_URL}"
+            "- whisper.cpp for transcription: \n   https://github.com/jerryshell/whisper.cpp-windows-vulkan-bin\n"
+            "- ffmpeg for media conversion: \n   https://ffmpeg.org/about.html\n"
+            f"- Model downloads from the whisper.cpp Hugging Face repository: \n   {MODEL_REPO_URL}\n\n"
         )
         dialog = ctk.CTkToplevel(self)
         dialog.title(f"About {APP_NAME}")
