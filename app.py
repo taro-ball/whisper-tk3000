@@ -139,25 +139,18 @@ def detect_cpu_name() -> str:
     return "CPU"
 
 
+def shorten_device_name(device_name: str) -> str:
+    cleaned = re.sub(r"\([^)]*\)|\[[^\]]*\]|\{[^}]*\}", " ", device_name)
+    cleaned = " ".join(cleaned.split()).strip(" -")
+    return cleaned or " ".join(device_name.split()) or device_name
+
+
 def shorten_cpu_name(cpu_name: str) -> str:
-    cleaned = " ".join(cpu_name.split())
-    cleaned = re.sub(r"\((?:R|TM|C)\)", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s+CPU\b", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s+Processor\b", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s*@\s*[\d.]+\s*GHz\b", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s+with\s+.+?\s+graphics\b.*$", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -")
-    return cleaned or cpu_name
+    return shorten_device_name(cpu_name)
 
 
 def shorten_gpu_name(gpu_name: str) -> str:
-    cleaned = " ".join(gpu_name.split())
-    cleaned = re.sub(r"\((?:R|TM|C)\)", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s*\([^)]*\)", "", cleaned)
-    cleaned = re.sub(r"\s+Graphics\b", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s+Series\b", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -")
-    return cleaned or gpu_name
+    return shorten_device_name(gpu_name)
 
 
 def build_cpu_option_label(cpu_name: str) -> str:
