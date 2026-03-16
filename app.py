@@ -44,19 +44,19 @@ MODEL_OPTIONS = [
     {
         "name": "ggml-base.en.bin",
         "size": "148Mb",
-        "label": "balanced",
+        "label": "balanced (english only)",
         "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
     },
     {
         "name": "ggml-large-v3-turbo.bin",
         "size": "1.62Gb",
-        "label": "precise",
+        "label": "precise, multilingual, but slower",
         "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
     },
     {
         "name": "ggml-tiny.en.bin",
         "size": "77Mb",
-        "label": "fast",
+        "label": "good enough, fast (english only)",
         "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
     },
 ]
@@ -614,7 +614,7 @@ class App(ctk.CTk):
 
         ctk.CTkButton(
             actions_frame,
-            text="Download manually",
+            text="More models - Download manually.",
             command=self.open_manual_download_page,
             fg_color="transparent",
             text_color=("blue", "#7fb3ff"),
@@ -899,7 +899,7 @@ class App(ctk.CTk):
 
         selected_model = self.model_var.get().strip()
         if not selected_model or selected_model == "No models found":
-            raise FileNotFoundError("No model selected. Add at least one .bin file under models\\.")
+            raise FileNotFoundError("No model selected. Use download button or put .bin file under models manually\\.")
 
         model_path = MODELS_DIR / selected_model
         if not model_path.exists():
