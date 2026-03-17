@@ -1465,7 +1465,7 @@ class App(ctk.CTk):
             return False
 
         self.log(
-            f"WARNING: CPU inference with {model_name} [{model_size_label}] may be slow."
+            f"WARNING: CPU inference with model {model_name} [{model_size_label}] may be slow."
         )
         return True
 
