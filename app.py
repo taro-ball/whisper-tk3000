@@ -48,27 +48,32 @@ MEDIA_SUFFIXES = (
 MODEL_OPTIONS = [
     {
         "name": "ggml-base.en.bin",
-        "size": "148Mb",
+        "size_label": "148 MB",
+        "size_bytes": 148 * 1024 * 1024,
         "label": "balanced (english only)",
         "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
     },
     {
         "name": "ggml-large-v3-turbo.bin",
-        "size": "1.62Gb",
+        "size_label": "1.62 GB",
+        "size_bytes": int(1.62 * 1024 * 1024 * 1024),
         "label": "precise, multilingual, but slower",
         "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
     },
     {
         "name": "ggml-tiny.en.bin",
-        "size": "77Mb",
+        "size_label": "77 MB",
+        "size_bytes": 77 * 1024 * 1024,
         "label": "good enough, fast (english only)",
         "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
     },
 ]
+MODEL_OPTIONS_BY_NAME = {str(option["name"]): option for option in MODEL_OPTIONS}
 FORMAT_OPTIONS = {
     "srt subtitle": "srt",
     "plain text": "txt",
 }
+NO_MODELS_LABEL = "No models found"
 SUPPORTED_MEDIA_TYPES = [
     ("Media files", " ".join(f"*{suffix}" for suffix in MEDIA_SUFFIXES)),
     ("All files", "*.*"),
@@ -77,6 +82,7 @@ WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 AUTO_GPU_LABEL = "Auto (best guess)"
 GPU_RUNTIME_MISSING_LABEL = "GPU runtime missing"
 CPU_THREAD_COUNT = max(1, os.cpu_count() or 1)
+SLOW_CPU_MODEL_WARNING_THRESHOLD_BYTES = 150 * 1024 * 1024
 GPU_LINE_RE = re.compile(r"^ggml_vulkan:\s+(\d+)\s+=\s+(.*?)\s+\|\s+uma:\s+(\d+)\b")
 WHISPER_RUNTIME_CANDIDATES = (
     {
@@ -141,7 +147,8 @@ def detect_cpu_name() -> str:
 
 def shorten_device_name(device_name: str) -> str:
     cleaned = re.sub(r"\([^)]*\)|\[[^\]]*\]|\{[^}]*\}", " ", device_name)
-    cleaned = " ".join(cleaned.split()).strip(" -")
+    cleaned = " ".join(cleaned.split())
+    cleaned = re.sub(r"\s+[a-z]+\b.*$", "", cleaned).strip(" -")
     return cleaned or " ".join(device_name.split()) or device_name
 
 
@@ -188,6 +195,9 @@ class App(ctk.CTk):
         self.prompt_var = tk.StringVar()
         self.debug_var = tk.BooleanVar(value=False)
         self.download_model_var = tk.StringVar(value=MODEL_OPTIONS[0]["name"])
+        self.available_models: list[dict[str, object]] = []
+        self.available_models_by_name: dict[str, dict[str, object]] = {}
+        self.model_display_lookup: dict[str, str] = {}
         self.latest_result_path: Path | None = None
         self.download_dialog: ctk.CTkToplevel | None = None
         self.batch_dialog: ctk.CTkToplevel | None = None
@@ -285,7 +295,7 @@ class App(ctk.CTk):
         )
         self.model_menu = ctk.CTkOptionMenu(
             self.controls_frame,
-            values=["No models found"],
+            values=[NO_MODELS_LABEL],
             variable=self.model_var,
         )
         self.model_menu.grid(row=row, column=1, padx=12, pady=6, sticky="ew")
@@ -601,13 +611,60 @@ class App(ctk.CTk):
             self.batch_selected_files = []
 
     def reload_models(self) -> None:
-        models = sorted(path.name for path in MODELS_DIR.glob("*.bin"))
-        if not models:
-            models = ["No models found"]
-        self.model_menu.configure(values=models)
-        current = self.model_var.get()
-        if current not in models:
-            self.model_var.set(models[0])
+        current_name = self._get_selected_model_name()
+        available_models: list[dict[str, object]] = []
+        for path in sorted(MODELS_DIR.glob("*.bin"), key=lambda candidate: candidate.name.lower()):
+            try:
+                size_bytes = path.stat().st_size
+            except OSError:
+                continue
+            available_models.append(
+                {
+                    "name": path.name,
+                    "path": path,
+                    "size_bytes": size_bytes,
+                    "size_label": self._format_model_size_label(size_bytes),
+                }
+            )
+
+        self.available_models = available_models
+        self.available_models_by_name = {str(model["name"]): model for model in available_models}
+        self.model_display_lookup = {}
+
+        if not available_models:
+            self.model_menu.configure(values=[NO_MODELS_LABEL])
+            self.model_var.set(NO_MODELS_LABEL)
+            return
+
+        model_labels = [self._build_model_display_label(model) for model in available_models]
+        self.model_display_lookup = {
+            self._build_model_display_label(model): str(model["name"]) for model in available_models
+        }
+        self.model_menu.configure(values=model_labels)
+
+        if current_name and current_name in self.available_models_by_name:
+            self._set_selected_model_name(current_name)
+        else:
+            self._set_selected_model_name(str(available_models[0]["name"]))
+
+    def _build_model_display_label(self, model: dict[str, object]) -> str:
+        return f"{model['name']} [{model['size_label']}]"
+
+    def _get_selected_model_name(self) -> str:
+        selected_value = self.model_var.get().strip()
+        if not selected_value or selected_value == NO_MODELS_LABEL:
+            return selected_value
+        return self.model_display_lookup.get(selected_value, selected_value)
+
+    def _set_selected_model_name(self, model_name: str) -> None:
+        model = self.available_models_by_name.get(model_name)
+        if model is None:
+            self.model_var.set(model_name)
+            return
+        self.model_var.set(self._build_model_display_label(model))
+
+    def _get_model_info(self, model_name: str) -> dict[str, object] | None:
+        return self.available_models_by_name.get(model_name)
 
     def reload_gpu_options(self) -> None:
         self.reload_whisper_runtimes()
@@ -714,7 +771,7 @@ class App(ctk.CTk):
         options_frame.grid_columnconfigure(0, weight=1)
 
         for index, option in enumerate(MODEL_OPTIONS):
-            text = f"{option['name']} ({option['size']}) - {option['label']}"
+            text = f"{option['name']} [{option['size_label']}] - {option['label']}"
             ctk.CTkRadioButton(
                 options_frame,
                 text=text,
@@ -786,7 +843,7 @@ class App(ctk.CTk):
             return
 
         selected_name = self.download_model_var.get().strip()
-        selected_option = next((option for option in MODEL_OPTIONS if option["name"] == selected_name), None)
+        selected_option = MODEL_OPTIONS_BY_NAME.get(selected_name)
         if selected_option is None:
             self.log("ERROR: No download model selected.")
             return
@@ -800,18 +857,18 @@ class App(ctk.CTk):
         )
         worker.start()
 
-    def _download_model(self, model_option: dict[str, str]) -> None:
-        destination = MODELS_DIR / model_option["name"]
+    def _download_model(self, model_option: dict[str, str | int]) -> None:
+        destination = MODELS_DIR / str(model_option["name"])
         temp_destination = destination.with_suffix(destination.suffix + ".part")
         try:
             MODELS_DIR.mkdir(parents=True, exist_ok=True)
             self.log(f"Downloading model from {model_option['url']}")
             self.log(f"Saving model to {destination}")
-            self._download_file(model_option["url"], temp_destination)
+            self._download_file(str(model_option["url"]), temp_destination)
             temp_destination.replace(destination)
             self.log(f"Model download complete: {destination.name}")
             self._schedule_ui_update(self.reload_models)
-            self._schedule_ui_update(lambda: self.model_var.set(destination.name))
+            self._schedule_ui_update(lambda: self._set_selected_model_name(destination.name))
         except Exception as exc:
             self.log(f"ERROR: Failed to download model: {exc}")
             if temp_destination.exists():
@@ -891,6 +948,7 @@ class App(ctk.CTk):
     def _execute_transcription(self) -> None:
         should_show_batch_progress = len(self.batch_selected_files) > 1
         debug_enabled = self.debug_var.get()
+        cpu_speed_warning_logged = False
         try:
             configs = self._build_run_configs()
             total = len(configs)
@@ -922,6 +980,12 @@ class App(ctk.CTk):
                         )
                     if not self._is_cpu_selection(selection_label) and not bool(whisper_runtime["supports_vulkan"]):
                         self.log("WARNING: Vulkan runtime not available. Falling back to BLAS/CPU runtime.")
+                    if not cpu_speed_warning_logged:
+                        cpu_speed_warning_logged = self._warn_if_cpu_inference_may_be_slow(
+                            config.get("model_info"),
+                            selection_label,
+                            whisper_runtime,
+                        )
                     whisper_command = self._build_whisper_command(
                         config,
                         selection_label,
@@ -975,6 +1039,7 @@ class App(ctk.CTk):
             )
 
             self.log(f"Benchmarking first 2 minutes of {input_path.name}")
+            self.log(f"Selected model: {model_path.name}")
             self._run_process(self._build_ffmpeg_command(config, audio_output=audio_output, duration_seconds=120), "ffmpeg")
 
             option_labels = [self.cpu_option_label]
@@ -1011,6 +1076,7 @@ class App(ctk.CTk):
                     f"Benchmarking {label} with {whisper_runtime['label']} "
                     f"({Path(whisper_runtime['cli_path']).parent.name})"
                 )
+                self._warn_if_cpu_inference_may_be_slow(config.get("model_info"), label, whisper_runtime)
                 elapsed_seconds = self._run_benchmark_process(whisper_command, whisper_env, label)
                 self.log(f"{elapsed_seconds:.2f} seconds")
         except Exception as exc:
@@ -1032,13 +1098,14 @@ class App(ctk.CTk):
 
         self._resolve_whisper_runtime(self.gpu_var.get().strip())
 
-        selected_model = self.model_var.get().strip()
-        if not selected_model or selected_model == "No models found":
+        selected_model = self._get_selected_model_name()
+        if not selected_model or selected_model == NO_MODELS_LABEL:
             raise FileNotFoundError("No model selected. Use download button or put .bin file under models manually\\.")
 
         model_path = MODELS_DIR / selected_model
         if not model_path.exists():
             raise FileNotFoundError(f"Missing model file: {model_path}")
+        model_info = self._get_model_info(selected_model)
 
         selected_format_label = self.format_var.get().strip().lower()
         selected_format = FORMAT_OPTIONS.get(selected_format_label)
@@ -1065,6 +1132,7 @@ class App(ctk.CTk):
                     "input_path": input_path,
                     "format": selected_format,
                     "model_path": model_path,
+                    "model_info": model_info,
                     "prompt": prompt,
                     "audio_output": audio_output,
                     "output_base": output_base,
@@ -1376,6 +1444,38 @@ class App(ctk.CTk):
 
     def _is_cpu_selection(self, selection_label: str) -> bool:
         return self.gpu_options.get(selection_label) == "cpu"
+
+    def _warn_if_cpu_inference_may_be_slow(
+        self,
+        model_info: object,
+        selection_label: str,
+        runtime: dict[str, object],
+    ) -> bool:
+        is_cpu_inference = self._is_cpu_selection(selection_label) or not bool(runtime["supports_vulkan"])
+        if not is_cpu_inference:
+            return False
+
+        if not isinstance(model_info, dict):
+            return False
+        model_size_bytes = int(model_info["size_bytes"])
+        model_size_label = str(model_info["size_label"])
+        model_name = str(model_info["name"])
+
+        if model_size_bytes <= SLOW_CPU_MODEL_WARNING_THRESHOLD_BYTES:
+            return False
+
+        self.log(
+            f"WARNING: CPU inference with {model_name} [{model_size_label}] may be slow."
+        )
+        return True
+
+    @staticmethod
+    def _format_model_size_label(size_bytes: int) -> str:
+        gib = 1024 * 1024 * 1024
+        mib = 1024 * 1024
+        if size_bytes >= gib:
+            return f"{size_bytes / gib:.2f} GB"
+        return f"{size_bytes / mib:.0f} MB"
 
     @staticmethod
     def _get_preferred_gpu_device(devices: list[dict[str, object]]) -> dict[str, object] | None:
