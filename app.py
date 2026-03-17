@@ -28,10 +28,11 @@ except ImportError:
 
 APP_DIR = Path(__file__).resolve().parent
 APP_NAME = "whisper-tk3000"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.2.2"
 APP_TITLE = "whisper-tk3000 audio to text transcriber"
 TELEMETRY_APP_ID = "5FD59222-E42C-4491-AD54-9A8FA5088609"
-TELEMETRY_URL = "https://nom.telemetrydeck.com/v2/"
+TELEMETRY_NAMESPACE = "com.gr"
+TELEMETRY_URL = f"https://nom.telemetrydeck.com/v2/namespace/{TELEMETRY_NAMESPACE}/"
 BIN_DIR = APP_DIR / "bin"
 FFMPEG_PATH = BIN_DIR / "ffmpeg.exe"
 MODELS_DIR = APP_DIR / "models"
@@ -164,6 +165,35 @@ def shorten_gpu_name(gpu_name: str) -> str:
     return shorten_device_name(gpu_name)
 
 
+def detect_gpu_vendor_name(gpu_name: str) -> str | None:
+    normalized = f" {' '.join(gpu_name.split()).lower()} "
+    vendor_patterns = (
+        ("NVIDIA", ("nvidia", "geforce", "quadro", "tesla")),
+        ("AMD", ("amd", "radeon", "ati")),
+        ("Intel", ("intel", "iris", "uhd", "arc")),
+        ("Qualcomm", ("qualcomm", "adreno")),
+        ("Apple", ("apple",)),
+        ("ARM", ("arm", "mali")),
+        ("Imagination", ("imagination", "powervr")),
+        ("Microsoft", ("microsoft", "warp")),
+    )
+    for vendor_name, patterns in vendor_patterns:
+        if any(f" {pattern} " in normalized for pattern in patterns):
+            return vendor_name
+    return None
+
+
+def build_gpu_vendors_payload_value(devices: list[dict[str, object]]) -> str:
+    vendor_names: list[str] = []
+    seen_vendor_names: set[str] = set()
+    for device in devices:
+        vendor_name = detect_gpu_vendor_name(str(device.get("name", "")))
+        if vendor_name and vendor_name not in seen_vendor_names:
+            seen_vendor_names.add(vendor_name)
+            vendor_names.append(vendor_name)
+    return ", ".join(vendor_names)
+
+
 def build_cpu_option_label(cpu_name: str) -> str:
     cpu_name = shorten_cpu_name(cpu_name)
     thread_label = "thread" if CPU_THREAD_COUNT == 1 else "threads"
@@ -210,6 +240,7 @@ class App(ctk.CTk):
         self.batch_file_rows: list[Path] = []
         self.batch_tree: ttk.Treeview | None = None
         self.download_telemetry_sent = False
+        self.telemetry_session_id = str(uuid.uuid4())
         self._suspend_input_path_tracking = False
         self._is_closing = False
         self.cpu_name = detect_cpu_name()
@@ -853,7 +884,7 @@ class App(ctk.CTk):
             self.log("ERROR: No download model selected.")
             return
 
-        self._send_download_telemetry_once(selected_name)
+        self._send_download_telemetry_once()
         self.close_download_dialog()
         self.set_running_state(True)
         worker = threading.Thread(
@@ -1538,25 +1569,37 @@ class App(ctk.CTk):
         except OSError as exc:
             raise RuntimeError(f"Could not download model: {exc}") from exc
 
-    def _send_download_telemetry_once(self, model_name: str) -> None:
+    def _send_download_telemetry_once(self) -> None:
         if self.download_telemetry_sent or not TELEMETRY_APP_ID:
             return
 
         self.download_telemetry_sent = True
+        self._send_telemetry_async("model_download_pressed")
+
+    def _send_telemetry_async(self, signal_type: str) -> None:
         threading.Thread(
             target=self._send_telemetry_signal,
-            args=("model_download_pressed",),
+            args=(signal_type,),
             daemon=True,
         ).start()
 
     def _send_telemetry_signal(self, signal_type: str) -> None:
+        payload = {
+            "App.version": APP_VERSION,
+            "App.platform": "Windows",
+        }
+        gpu_vendors = build_gpu_vendors_payload_value(self.gpu_devices)
+        if gpu_vendors:
+            payload["App.gpuVendors"] = gpu_vendors
+
         body = json.dumps(
             [
                 {
                     "appID": TELEMETRY_APP_ID,
                     "clientUser": hashlib.sha256(str(uuid.getnode()).encode("utf-8")).hexdigest(),
+                    "sessionID": self.telemetry_session_id,
                     "type": signal_type,
-                    "payload": {"TelemetryDeck.AppInfo.version": APP_VERSION},
+                    "payload": payload,
                 }
             ]
         ).encode("utf-8")
