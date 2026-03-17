@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
-import platform
 import queue
 import re
 import subprocess
 import threading
 import time
 import urllib.request
+import uuid
 import webbrowser
 from collections.abc import Callable
 from datetime import datetime
@@ -28,6 +30,8 @@ APP_DIR = Path(__file__).resolve().parent
 APP_NAME = "whisper-tk3000"
 APP_VERSION = "0.2.0"
 APP_TITLE = "whisper-tk3000 audio to text transcriber"
+TELEMETRY_APP_ID = "5FD59222-E42C-4491-AD54-9A8FA5088609"
+TELEMETRY_URL = "https://nom.telemetrydeck.com/v2/"
 BIN_DIR = APP_DIR / "bin"
 FFMPEG_PATH = BIN_DIR / "ffmpeg.exe"
 MODELS_DIR = APP_DIR / "models"
@@ -205,6 +209,7 @@ class App(ctk.CTk):
         self.batch_selected_files: list[Path] = []
         self.batch_file_rows: list[Path] = []
         self.batch_tree: ttk.Treeview | None = None
+        self.download_telemetry_sent = False
         self._suspend_input_path_tracking = False
         self._is_closing = False
         self.cpu_name = detect_cpu_name()
@@ -848,6 +853,7 @@ class App(ctk.CTk):
             self.log("ERROR: No download model selected.")
             return
 
+        self._send_download_telemetry_once(selected_name)
         self.close_download_dialog()
         self.set_running_state(True)
         worker = threading.Thread(
@@ -1531,6 +1537,40 @@ class App(ctk.CTk):
             urllib.request.urlretrieve(url, destination, report_progress)
         except OSError as exc:
             raise RuntimeError(f"Could not download model: {exc}") from exc
+
+    def _send_download_telemetry_once(self, model_name: str) -> None:
+        if self.download_telemetry_sent or not TELEMETRY_APP_ID:
+            return
+
+        self.download_telemetry_sent = True
+        threading.Thread(
+            target=self._send_telemetry_signal,
+            args=("model_download_pressed",),
+            daemon=True,
+        ).start()
+
+    def _send_telemetry_signal(self, signal_type: str) -> None:
+        body = json.dumps(
+            [
+                {
+                    "appID": TELEMETRY_APP_ID,
+                    "clientUser": hashlib.sha256(str(uuid.getnode()).encode("utf-8")).hexdigest(),
+                    "type": signal_type,
+                    "payload": {"TelemetryDeck.AppInfo.version": APP_VERSION},
+                }
+            ]
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            TELEMETRY_URL,
+            data=body,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5):
+                pass
+        except OSError:
+            pass
 
     @staticmethod
     def _quote_argument(arg: str) -> str:
