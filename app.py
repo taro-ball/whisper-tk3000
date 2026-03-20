@@ -36,7 +36,7 @@ except ImportError:
 
 APP_DIR = Path(__file__).resolve().parent
 APP_NAME = "whisper-tk3000"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.3.1"
 APP_TITLE = "whisper-tk3000 audio to text transcriber"
 TELEMETRY_APP_ID = "5FD59222-E42C-4491-AD54-9A8FA5088609"
 TELEMETRY_NAMESPACE = "com.gr"
@@ -94,6 +94,8 @@ SUPPORTED_MEDIA_TYPES = [
 WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 AUTO_GPU_LABEL = "Auto (best guess)"
 GPU_RUNTIME_MISSING_LABEL = "GPU runtime missing"
+GPU_DETECTION_FAILED_LABEL = "Vulkan detection failed"
+GPU_NO_DEVICES_LABEL = "No Vulkan devices"
 SLOW_CPU_MODEL_WARNING_THRESHOLD_BYTES = 150 * 1024 * 1024
 GPU_LINE_RE = re.compile(r"^ggml_vulkan:\s+(\d+)\s+=\s+(.*?)\s+\|\s+uma:\s+(\d+)\b")
 WHISPER_RUNTIME_CANDIDATES = (
@@ -780,17 +782,17 @@ class App(ctk.CTk):
 
     def reload_gpu_options(self) -> None:
         self.reload_whisper_runtimes()
-        has_vulkan_runtime = self._get_preferred_whisper_runtime(("vulkan", "legacy")) is not None
-        devices = self._detect_vulkan_devices()
+        gpu_availability = self._get_vulkan_gpu_availability()
+        devices = list(gpu_availability["devices"])
         values: list[str] = []
         options: dict[str, int | str | None] = {}
 
-        if has_vulkan_runtime and devices:
+        if gpu_availability["status"] == "available" and devices:
             auto_label = self._build_auto_gpu_label(devices)
             values.append(auto_label)
             options[auto_label] = None
 
-        if has_vulkan_runtime:
+        if gpu_availability["status"] == "available":
             for display_index, device in enumerate(devices, start=1):
                 label = f"GPU {display_index} - {device['name']}"
                 values.append(label)
@@ -803,18 +805,19 @@ class App(ctk.CTk):
         self.gpu_devices = devices
         self.gpu_options = options
         self.gpu_menu.configure(values=values)
-        self.gpu_controls_enabled = has_vulkan_runtime
-        if not has_vulkan_runtime:
+        self.gpu_controls_enabled = bool(gpu_availability["controls_enabled"])
+        log_message = str(gpu_availability["log_message"] or "").strip()
+        if log_message:
+            self.log(log_message)
+        if gpu_availability["status"] == "runtime_missing":
             self.gpu_var.set(self.cpu_option_label)
-            self.gpu_note_label.configure(text="runtime missing")
         elif current in options:
             self.gpu_var.set(current)
         elif devices:
             self.gpu_var.set(values[0])
         else:
             self.gpu_var.set(self.cpu_option_label)
-        if has_vulkan_runtime:
-            self.gpu_note_label.configure(text="")
+        self.gpu_note_label.configure(text=str(gpu_availability["note_label"]))
         self._sync_gpu_controls_state()
 
     def _sync_gpu_controls_state(self) -> None:
@@ -992,16 +995,10 @@ class App(ctk.CTk):
         finally:
             self._schedule_ui_update(lambda: self.set_running_state(False))
 
-    def clear_console(self) -> None:
-        self.console.configure(state="normal")
-        self.console.delete("1.0", "end")
-        self.console.configure(state="disabled")
-
     def run_transcription(self) -> None:
         if self.is_running:
             return
 
-        self.clear_console()
         self._set_result_path(None)
         self.cancel_requested = False
         self.transcription_running = True
@@ -1014,7 +1011,6 @@ class App(ctk.CTk):
             return
 
         self.reload_gpu_options()
-        self.clear_console()
         self._set_result_path(None)
         self.set_running_state(True)
         worker = threading.Thread(target=self._execute_benchmark, daemon=True)
@@ -1471,12 +1467,70 @@ class App(ctk.CTk):
     def _get_whisper_runtime(self, key: str) -> dict[str, object] | None:
         return self.whisper_runtime_lookup.get(key)
 
-    def _get_preferred_whisper_runtime(self, keys: tuple[str, ...]) -> dict[str, object] | None:
+    def _get_preferred_whisper_runtime(
+        self,
+        keys: tuple[str, ...],
+        *,
+        allow_fallback: bool = True,
+    ) -> dict[str, object] | None:
         for key in keys:
             runtime = self._get_whisper_runtime(key)
             if runtime is not None:
                 return runtime
-        return self.whisper_runtimes[0] if self.whisper_runtimes else None
+        if allow_fallback and self.whisper_runtimes:
+            return self.whisper_runtimes[0]
+        return None
+
+    def _build_missing_vulkan_runtime_message(self) -> str:
+        return (
+            "INFO: Hiding GPU options because no Vulkan runtime binary was found. "
+            "Expected "
+            "bin\\whisper.vulkan\\whisper-cli.exe or "
+            "bin\\whisper.cpp\\whisper-cli.exe."
+        )
+
+    def _build_missing_vulkan_backend_message(self) -> str:
+        return (
+            "INFO: Hiding GPU options because the Vulkan binary is present, "
+            "but no Vulkan devices were detected. GPU acceleration is "
+            "unavailable on this machine."
+        )
+
+    def _get_vulkan_gpu_availability(self) -> dict[str, object]:
+        runtime = self._get_preferred_whisper_runtime(("vulkan", "legacy"), allow_fallback=False)
+        if runtime is None:
+            return {
+                "status": "runtime_missing",
+                "devices": [],
+                "log_message": self._build_missing_vulkan_runtime_message(),
+                "note_label": GPU_RUNTIME_MISSING_LABEL,
+                "controls_enabled": False,
+            }
+
+        devices, detection_message = self._detect_vulkan_devices(runtime)
+        if detection_message is not None:
+            return {
+                "status": "detection_failed",
+                "devices": [],
+                "log_message": detection_message,
+                "note_label": GPU_DETECTION_FAILED_LABEL,
+                "controls_enabled": True,
+            }
+        if not devices:
+            return {
+                "status": "no_devices",
+                "devices": [],
+                "log_message": self._build_missing_vulkan_backend_message(),
+                "note_label": GPU_NO_DEVICES_LABEL,
+                "controls_enabled": True,
+            }
+        return {
+            "status": "available",
+            "devices": devices,
+            "log_message": None,
+            "note_label": "",
+            "controls_enabled": True,
+        }
 
     def _resolve_whisper_runtime(self, selection_label: str) -> dict[str, object]:
         self.reload_whisper_runtimes()
@@ -1494,11 +1548,10 @@ class App(ctk.CTk):
 
         return runtime
 
-    def _detect_vulkan_devices(self) -> list[dict[str, object]]:
-        runtime = self._get_preferred_whisper_runtime(("vulkan", "legacy"))
-        if runtime is None:
-            return []
-
+    def _detect_vulkan_devices(
+        self,
+        runtime: dict[str, object],
+    ) -> tuple[list[dict[str, object]], str | None]:
         try:
             result = subprocess.run(
                 [str(runtime["cli_path"]), "--help"],
@@ -1511,8 +1564,7 @@ class App(ctk.CTk):
                 **build_hidden_subprocess_kwargs(),
             )
         except OSError as exc:
-            self.log(f"WARNING: Could not detect Vulkan GPUs: {exc}")
-            return []
+            return [], f"WARNING: Could not detect Vulkan GPUs: {exc}"
 
         devices: list[dict[str, object]] = []
         for line in result.stdout.splitlines():
@@ -1527,7 +1579,7 @@ class App(ctk.CTk):
                 }
             )
 
-        return devices
+        return devices, None
 
     def _guess_best_gpu_index(self) -> int | None:
         preferred_device = self._get_preferred_gpu_device(self.gpu_devices)
