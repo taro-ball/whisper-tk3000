@@ -5,6 +5,7 @@ import json
 import os
 import queue
 import re
+import struct
 import subprocess
 import threading
 import time
@@ -21,6 +22,13 @@ from tkinter import filedialog, ttk
 from tkinter import messagebox
 
 try:
+    import ctypes
+    from ctypes import wintypes
+except ImportError:
+    ctypes = None
+    wintypes = None
+
+try:
     import winreg
 except ImportError:
     winreg = None
@@ -28,7 +36,7 @@ except ImportError:
 
 APP_DIR = Path(__file__).resolve().parent
 APP_NAME = "whisper-tk3000"
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.3.0"
 APP_TITLE = "whisper-tk3000 audio to text transcriber"
 TELEMETRY_APP_ID = "5FD59222-E42C-4491-AD54-9A8FA5088609"
 TELEMETRY_NAMESPACE = "com.gr"
@@ -86,7 +94,6 @@ SUPPORTED_MEDIA_TYPES = [
 WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 AUTO_GPU_LABEL = "Auto (best guess)"
 GPU_RUNTIME_MISSING_LABEL = "GPU runtime missing"
-CPU_THREAD_COUNT = max(1, os.cpu_count() or 1)
 SLOW_CPU_MODEL_WARNING_THRESHOLD_BYTES = 150 * 1024 * 1024
 GPU_LINE_RE = re.compile(r"^ggml_vulkan:\s+(\d+)\s+=\s+(.*?)\s+\|\s+uma:\s+(\d+)\b")
 WHISPER_RUNTIME_CANDIDATES = (
@@ -97,9 +104,9 @@ WHISPER_RUNTIME_CANDIDATES = (
         "supports_vulkan": True,
     },
     {
-        "key": "blas",
-        "folder": "whisper.blas",
-        "label": "BLAS",
+        "key": "cpu",
+        "folder": "whisper.cpu",
+        "label": "CPU",
         "supports_vulkan": False,
     },
     {
@@ -109,6 +116,71 @@ WHISPER_RUNTIME_CANDIDATES = (
         "supports_vulkan": True,
     },
 )
+
+
+def detect_physical_cpu_core_count() -> tuple[int | None, str | None]:
+    if os.name != "nt" or ctypes is None or wintypes is None:
+        return None, "Physical core detection unavailable on this platform."
+
+    relation_processor_core = 0
+    error_insufficient_buffer = 122
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_logical_processor_information_ex = kernel32.GetLogicalProcessorInformationEx
+        get_logical_processor_information_ex.argtypes = [
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        get_logical_processor_information_ex.restype = wintypes.BOOL
+
+        buffer_size = wintypes.DWORD(0)
+        get_logical_processor_information_ex(
+            relation_processor_core,
+            None,
+            ctypes.byref(buffer_size),
+        )
+        if ctypes.get_last_error() != error_insufficient_buffer or buffer_size.value <= 0:
+            raise OSError(f"buffer probe failed with Win32 error {ctypes.get_last_error()}")
+
+        buffer = ctypes.create_string_buffer(buffer_size.value)
+        if not get_logical_processor_information_ex(
+            relation_processor_core,
+            buffer,
+            ctypes.byref(buffer_size),
+        ):
+            raise OSError(f"processor query failed with Win32 error {ctypes.get_last_error()}")
+
+        core_count = 0
+        offset = 0
+        while offset < buffer_size.value:
+            _, entry_size = struct.unpack_from("II", buffer, offset)
+            if entry_size <= 0:
+                raise ValueError("invalid processor info record size")
+            core_count += 1
+            offset += entry_size
+
+        if core_count <= 0:
+            raise ValueError("Windows returned zero physical cores")
+
+        return core_count, None
+    except (AttributeError, OSError, struct.error, ValueError) as exc:
+        return None, f"Physical core detection failed: {exc}"
+
+
+CPU_LOGICAL_THREAD_COUNT = max(1, os.cpu_count() or 1)
+CPU_PHYSICAL_CORE_COUNT, CPU_THREAD_FALLBACK_DEBUG_MESSAGE = detect_physical_cpu_core_count()
+CPU_THREAD_COUNT = CPU_PHYSICAL_CORE_COUNT or CPU_LOGICAL_THREAD_COUNT
+if CPU_PHYSICAL_CORE_COUNT is not None:
+    CPU_THREAD_COUNT_LOG_MESSAGE = (
+        f"Using {CPU_THREAD_COUNT} physical core(s) for CPU thread count."
+    )
+else:
+    CPU_THREAD_COUNT_LOG_MESSAGE = (
+        f"{CPU_THREAD_FALLBACK_DEBUG_MESSAGE} "
+        f"Using {CPU_THREAD_COUNT} logical thread(s)."
+    )
 
 
 def build_hidden_subprocess_kwargs() -> dict[str, object]:
@@ -196,7 +268,11 @@ def build_gpu_vendors_payload_value(devices: list[dict[str, object]]) -> str:
 
 def build_cpu_option_label(cpu_name: str) -> str:
     cpu_name = shorten_cpu_name(cpu_name)
-    thread_label = "thread" if CPU_THREAD_COUNT == 1 else "threads"
+    if CPU_PHYSICAL_CORE_COUNT is not None:
+        core_label = "physical core" if CPU_THREAD_COUNT == 1 else "physical cores"
+        return f"CPU only - {cpu_name} - {CPU_THREAD_COUNT} {core_label}"
+
+    thread_label = "logical thread" if CPU_THREAD_COUNT == 1 else "logical threads"
     return f"CPU only - {cpu_name} - {CPU_THREAD_COUNT} {thread_label}"
 
 
@@ -990,6 +1066,7 @@ class App(ctk.CTk):
             configs = self._build_run_configs()
             total = len(configs)
             last_output: Path | None = None
+            self.log(CPU_THREAD_COUNT_LOG_MESSAGE)
 
             if should_show_batch_progress:
                 self._schedule_ui_update(lambda: self._show_batch_progress(1, total))
@@ -1016,7 +1093,7 @@ class App(ctk.CTk):
                             f"({Path(whisper_runtime['cli_path']).parent.name})"
                         )
                     if not self._is_cpu_selection(selection_label) and not bool(whisper_runtime["supports_vulkan"]):
-                        self.log("WARNING: Vulkan runtime not available. Falling back to BLAS/CPU runtime.")
+                        self.log("WARNING: Vulkan runtime not available. Falling back to CPU runtime.")
                     if not cpu_speed_warning_logged:
                         cpu_speed_warning_logged = self._warn_if_cpu_inference_may_be_slow(
                             config.get("model_info"),
@@ -1076,6 +1153,7 @@ class App(ctk.CTk):
             )
 
             self.log(f"Benchmarking first 2 minutes of {input_path.name}")
+            self.log(CPU_THREAD_COUNT_LOG_MESSAGE)
             self.log(f"Selected model: {model_path.name}")
             self._run_process(self._build_ffmpeg_command(config, audio_output=audio_output, duration_seconds=120), "ffmpeg")
 
@@ -1403,15 +1481,15 @@ class App(ctk.CTk):
     def _resolve_whisper_runtime(self, selection_label: str) -> dict[str, object]:
         self.reload_whisper_runtimes()
         if self._is_cpu_selection(selection_label):
-            runtime = self._get_preferred_whisper_runtime(("blas", "vulkan", "legacy"))
+            runtime = self._get_preferred_whisper_runtime(("cpu", "vulkan", "legacy"))
         else:
-            runtime = self._get_preferred_whisper_runtime(("vulkan", "legacy", "blas"))
+            runtime = self._get_preferred_whisper_runtime(("vulkan", "legacy", "cpu"))
 
         if runtime is None:
             raise FileNotFoundError(
                 "Missing whisper.cpp runtime. Expected "
                 "bin\\whisper.vulkan\\whisper-cli.exe and/or "
-                "bin\\whisper.blas\\whisper-cli.exe."
+                "bin\\whisper.cpu\\whisper-cli.exe."
             )
 
         return runtime
