@@ -1153,7 +1153,7 @@ class App(ctk.CTk):
                 stem=f"{input_path.stem}{timestamp}.benchmark",
             )
 
-            self.log(f""========================= Benchmarking on {input_path.name}")
+            self.log(f"========================= Benchmarking on {input_path.name}")
             self.log(f"Selected model: {model_path.name}")
             self._convert_input_to_audio(
                 config,
