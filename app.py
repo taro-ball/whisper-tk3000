@@ -464,7 +464,7 @@ class App(ctk.CTk):
         row += 1
         self.run_button = ctk.CTkButton(
             self.controls_frame,
-            text="Convert and Transcribe",
+            text="Transcribe",
             command=self.run_transcription,
             width=200,
         )
@@ -840,7 +840,7 @@ class App(ctk.CTk):
             self.run_button.configure(text="Cancel", command=self.cancel_transcription, state="normal")
         else:
             self.run_button.configure(
-                text="Convert and Transcribe",
+                text="Transcribe",
                 command=self.run_transcription,
                 state=state,
             )
@@ -1076,8 +1076,7 @@ class App(ctk.CTk):
                     self.log(f"Selected output format: {config['format'].upper()}")
                     self.log(f"Selected model: {config['model_path'].name}")
                 try:
-                    ffmpeg_command = self._build_ffmpeg_command(config, include_stats=debug_enabled)
-                    self._run_process(ffmpeg_command, "ffmpeg", log_details=debug_enabled)
+                    self._convert_input_to_audio(config, debug_enabled=debug_enabled)
                     self._raise_if_cancelled()
 
                     selection_label = self.gpu_var.get().strip()
@@ -1135,6 +1134,7 @@ class App(ctk.CTk):
     def _execute_benchmark(self) -> None:
         audio_output: Path | None = None
         benchmark_outputs: list[Path] = []
+        debug_enabled = self.debug_var.get()
         try:
             configs = self._build_run_configs()
             config = configs[0]
@@ -1151,7 +1151,12 @@ class App(ctk.CTk):
             self.log(f"Benchmarking first 2 minutes of {input_path.name}")
             self.log(CPU_THREAD_COUNT_LOG_MESSAGE)
             self.log(f"Selected model: {model_path.name}")
-            self._run_process(self._build_ffmpeg_command(config, audio_output=audio_output, duration_seconds=120), "ffmpeg")
+            self._convert_input_to_audio(
+                config,
+                audio_output=audio_output,
+                duration_seconds=120,
+                debug_enabled=debug_enabled,
+            )
 
             option_labels = [self.cpu_option_label]
             option_labels.extend(
@@ -1194,7 +1199,7 @@ class App(ctk.CTk):
             self.log(f"ERROR: {exc}")
         finally:
             if audio_output is not None:
-                self._cleanup_audio_output(audio_output)
+                self._cleanup_audio_output(audio_output, log_removal=debug_enabled)
             for output_path in benchmark_outputs:
                 if output_path.exists():
                     try:
@@ -1317,6 +1322,22 @@ class App(ctk.CTk):
             ]
         )
         return command
+
+    def _convert_input_to_audio(
+        self,
+        config: dict[str, Path | str],
+        *,
+        audio_output: Path | None = None,
+        duration_seconds: int | None = None,
+        debug_enabled: bool = False,
+    ) -> None:
+        ffmpeg_command = self._build_ffmpeg_command(
+            config,
+            audio_output=audio_output,
+            include_stats=debug_enabled,
+            duration_seconds=duration_seconds,
+        )
+        self._run_process(ffmpeg_command, "ffmpeg", log_details=debug_enabled)
 
     def _build_whisper_command(
         self,
@@ -1716,7 +1737,6 @@ class App(ctk.CTk):
     def _send_telemetry_signal(self, signal_type: str) -> None:
         payload = {
             "App.version": APP_VERSION,
-            "App.platform": "Windows",
         }
         gpu_vendors = build_gpu_vendors_payload_value(self.gpu_devices)
         if gpu_vendors:
