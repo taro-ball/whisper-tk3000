@@ -1059,10 +1059,10 @@ class App(ctk.CTk):
         debug_enabled = self.debug_var.get()
         cpu_speed_warning_logged = False
         try:
+            self.log("")
             configs = self._build_run_configs()
             total = len(configs)
             last_output: Path | None = None
-            self.log(CPU_THREAD_COUNT_LOG_MESSAGE)
 
             if should_show_batch_progress:
                 self._schedule_ui_update(lambda: self._show_batch_progress(1, total))
@@ -1071,7 +1071,7 @@ class App(ctk.CTk):
                 self._raise_if_cancelled()
                 if total > 1:
                     self.log(f"========================= Batch item {index} of {total}")
-                self.log(f"========================= processing {config['input_path'].name} =========================\n")
+                self.log(f"========================= processing {config['input_path'].name}\n")
                 if debug_enabled:
                     self.log(f"Selected output format: {config['format'].upper()}")
                     self.log(f"Selected model: {config['model_path'].name}")
@@ -1087,8 +1087,7 @@ class App(ctk.CTk):
                             f"Using whisper.cpp runtime: {whisper_runtime['label']} "
                             f"({Path(whisper_runtime['cli_path']).parent.name})"
                         )
-                    if not self._is_cpu_selection(selection_label) and not bool(whisper_runtime["supports_vulkan"]):
-                        self.log("WARNING: Vulkan runtime not available. Falling back to CPU runtime.")
+                    self._log_cpu_inference_details(selection_label, whisper_runtime)
                     if not cpu_speed_warning_logged:
                         cpu_speed_warning_logged = self._warn_if_cpu_inference_may_be_slow(
                             config.get("model_info"),
@@ -1141,6 +1140,7 @@ class App(ctk.CTk):
         benchmark_outputs: list[Path] = []
         debug_enabled = self.debug_var.get()
         try:
+            self.log("")
             configs = self._build_run_configs()
             config = configs[0]
             input_path = Path(config["input_path"])
@@ -1153,8 +1153,7 @@ class App(ctk.CTk):
                 stem=f"{input_path.stem}{timestamp}.benchmark",
             )
 
-            self.log(f"Benchmarking first 2 minutes of {input_path.name}")
-            self.log(CPU_THREAD_COUNT_LOG_MESSAGE)
+            self.log(f""========================= Benchmarking on {input_path.name}")
             self.log(f"Selected model: {model_path.name}")
             self._convert_input_to_audio(
                 config,
@@ -1197,6 +1196,7 @@ class App(ctk.CTk):
                     f"Benchmarking {label} with {whisper_runtime['label']} "
                     f"({Path(whisper_runtime['cli_path']).parent.name})"
                 )
+                self._log_cpu_inference_details(label, whisper_runtime)
                 self._warn_if_cpu_inference_may_be_slow(config.get("model_info"), label, whisper_runtime)
                 elapsed_seconds = self._run_benchmark_process(whisper_command, whisper_env, label)
                 self.log(f"{elapsed_seconds:.2f} seconds")
@@ -1638,13 +1638,27 @@ class App(ctk.CTk):
     def _is_cpu_selection(self, selection_label: str) -> bool:
         return self.gpu_options.get(selection_label) == "cpu"
 
+    def _is_cpu_inference(self, selection_label: str, runtime: dict[str, object]) -> bool:
+        return self._is_cpu_selection(selection_label) or not bool(runtime["supports_vulkan"])
+
+    def _log_cpu_inference_details(self, selection_label: str, runtime: dict[str, object]) -> None:
+        if self._is_cpu_selection(selection_label):
+            self.log(CPU_THREAD_COUNT_LOG_MESSAGE)
+            return
+
+        if not bool(runtime["supports_vulkan"]):
+            self.log(
+                "WARNING: Vulkan runtime not available. Falling back to CPU runtime. "
+                f"{CPU_THREAD_COUNT_LOG_MESSAGE}"
+            )
+
     def _warn_if_cpu_inference_may_be_slow(
         self,
         model_info: object,
         selection_label: str,
         runtime: dict[str, object],
     ) -> bool:
-        is_cpu_inference = self._is_cpu_selection(selection_label) or not bool(runtime["supports_vulkan"])
+        is_cpu_inference = self._is_cpu_inference(selection_label, runtime)
         if not is_cpu_inference:
             return False
 
