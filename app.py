@@ -1117,7 +1117,12 @@ class App(ctk.CTk):
                 finally:
                     self._cleanup_audio_output(config["audio_output"], log_removal=debug_enabled)
 
-            self._schedule_ui_update(lambda: self._set_result_path(last_output))
+            self._schedule_ui_update(
+                lambda: (
+                    self._set_result_path(last_output),
+                    self.reveal_result_file() if last_output is not None else None,
+                )
+            )
         except TranscriptionCancelled:
             self.log("Transcription cancelled.")
             self._schedule_ui_update(lambda: self._set_result_path(None))
@@ -1808,15 +1813,17 @@ class App(ctk.CTk):
 
     def reveal_result_file(self) -> None:
         path = self.latest_result_path
-        if path is None:
-            return
-        if not path.exists():
+        if path is None or not path.exists():
             self.log(f"Result file no longer exists: {path}")
             self._set_result_path(None)
             return
 
+        select_arg = f'/select,"{os.path.normpath(str(path.resolve()))}"'
         try:
-            subprocess.Popen(["explorer.exe", "/select,", str(path)], shell=False)
+            shell32 = ctypes.windll.shell32
+            result = shell32.ShellExecuteW(None, "open", "explorer.exe", select_arg, None, 1)
+            if result <= 32:
+                raise OSError(f"ShellExecuteW failed with code {result}")
         except OSError as exc:
             self.log(f"ERROR: Could not reveal result file: {exc}")
 
