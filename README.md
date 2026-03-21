@@ -53,6 +53,28 @@ python -m venv .venv
 .\.venv\Scripts\python.exe app.py
 ```
 
+### Tests
+
+Fast default suite:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+```
+
+CPU smoke:
+
+```powershell
+$env:WHISPER_TK3000_RUN_SMOKE=1
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+```
+
+Vulkan smoke:
+
+```powershell
+$env:WHISPER_TK3000_RUN_VULKAN_SMOKE=1
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+```
+
 ### Build (canonical Windows workflow)
 
 ```powershell
