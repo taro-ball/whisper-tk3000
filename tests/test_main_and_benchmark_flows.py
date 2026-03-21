@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
 from pathlib import Path
 import importlib.util
 import sys
 import types
+
+from core_logic import RunConfig
+from tests.temp_env import temporary_directory
 
 
 if importlib.util.find_spec("customtkinter") is None:
@@ -61,26 +63,26 @@ def _tiny_model_path() -> Path:
     return tiny
 
 
-def _build_single_config(media_path: Path, model_path: Path, work_dir: Path) -> dict[str, object]:
+def _build_single_config(media_path: Path, model_path: Path, work_dir: Path) -> RunConfig:
     transcript_output = work_dir / f"{media_path.stem}.transcript.txt"
-    return {
-        "input_path": media_path,
-        "format": "txt",
-        "model_path": model_path,
-        "model_info": {
+    return RunConfig(
+        input_path=media_path,
+        format="txt",
+        model_path=model_path,
+        model_info={
             "name": model_path.name,
             "size_label": "77 MB",
             "size_bytes": 77 * 1024 * 1024,
         },
-        "prompt": "",
-        "audio_output": work_dir / f"{media_path.stem}.wav",
-        "output_base": transcript_output.with_suffix(""),
-        "transcript_output": transcript_output,
-    }
+        prompt="",
+        audio_output=work_dir / f"{media_path.stem}.wav",
+        output_base=transcript_output.with_suffix(""),
+        transcript_output=transcript_output,
+    )
 
 
 class TestMainAndBenchmarkFlows(unittest.TestCase):
-    def _new_harness(self, config: dict[str, object]) -> tuple[App, str, str]:
+    def _new_harness(self, config: RunConfig) -> tuple[App, str, str]:
         app = App.__new__(App)
 
         cpu_label = "CPU only - test"
@@ -140,7 +142,7 @@ class TestMainAndBenchmarkFlows(unittest.TestCase):
         media_path = _first_media_file_in_dist()
         model_path = _tiny_model_path()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with temporary_directory() as temp_dir:
             config = _build_single_config(media_path, model_path, Path(temp_dir))
             app, cpu_label, gpu_label = self._new_harness(config)
 
@@ -166,13 +168,13 @@ class TestMainAndBenchmarkFlows(unittest.TestCase):
             gpu_cmd, gpu_env = captured_runs[1]
 
             self.assertIn(str(model_path), cpu_cmd)
-            self.assertIn(str(config["audio_output"]), cpu_cmd)
+            self.assertIn(str(config.audio_output), cpu_cmd)
             self.assertNotIn("-ng", cpu_cmd)
             self.assertIn("-t", cpu_cmd)
             self.assertTrue(cpu_env is None or "GGML_VK_VISIBLE_DEVICES" not in cpu_env)
 
             self.assertIn(str(model_path), gpu_cmd)
-            self.assertIn(str(config["audio_output"]), gpu_cmd)
+            self.assertIn(str(config.audio_output), gpu_cmd)
             self.assertNotIn("-ng", gpu_cmd)
             self.assertEqual(gpu_env.get("GGML_VK_VISIBLE_DEVICES"), "0")
 
@@ -180,7 +182,7 @@ class TestMainAndBenchmarkFlows(unittest.TestCase):
         media_path = _first_media_file_in_dist()
         model_path = _tiny_model_path()
 
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with temporary_directory() as temp_dir:
             config = _build_single_config(media_path, model_path, Path(temp_dir))
             app, cpu_label, gpu_label = self._new_harness(config)
 

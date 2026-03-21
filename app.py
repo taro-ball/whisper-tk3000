@@ -5,7 +5,6 @@ import json
 import os
 import queue
 import re
-import struct
 import subprocess
 import threading
 import time
@@ -23,20 +22,39 @@ from tkinter import messagebox
 
 try:
     import ctypes
-    from ctypes import wintypes
 except ImportError:
     ctypes = None
-    wintypes = None
 
-try:
-    import winreg
-except ImportError:
-    winreg = None
+from core_logic import (
+    RunConfig,
+    build_run_configs,
+    build_ffmpeg_command,
+    build_whisper_command,
+    build_unique_output_path,
+    build_auto_gpu_label,
+    format_model_size_label,
+    get_preferred_gpu_device,
+    slugify_label,
+)
+from platform_runtime import (
+    detect_physical_cpu_core_count,
+    detect_cpu_name,
+    shorten_device_name,
+    shorten_cpu_name,
+    shorten_gpu_name,
+    detect_gpu_vendor_name,
+    build_gpu_vendors_payload_value,
+    build_cpu_option_label,
+    build_hidden_subprocess_kwargs,
+    detect_vulkan_devices,
+    discover_whisper_runtimes,
+    get_preferred_whisper_runtime,
+)
 
 
 APP_DIR = Path(__file__).resolve().parent
 APP_NAME = "whisper-tk3000"
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.4.1"
 APP_TITLE = "whisper-tk3000 audio to text transcriber"
 TELEMETRY_APP_ID = "5FD59222-E42C-4491-AD54-9A8FA5088609"
 TELEMETRY_NAMESPACE = "com.gr"
@@ -92,83 +110,13 @@ SUPPORTED_MEDIA_TYPES = [
     ("All files", "*.*"),
 ]
 WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+# GPU-related constants
 AUTO_GPU_LABEL = "Auto (best guess)"
 GPU_RUNTIME_MISSING_LABEL = "GPU runtime missing"
 GPU_DETECTION_FAILED_LABEL = "Vulkan detection failed"
 GPU_NO_DEVICES_LABEL = "No Vulkan devices"
 SLOW_CPU_MODEL_WARNING_THRESHOLD_BYTES = 150 * 1024 * 1024
-GPU_LINE_RE = re.compile(r"^ggml_vulkan:\s+(\d+)\s+=\s+(.*?)\s+\|\s+uma:\s+(\d+)\b")
-WHISPER_RUNTIME_CANDIDATES = (
-    {
-        "key": "vulkan",
-        "folder": "whisper.vulkan",
-        "label": "Vulkan",
-        "supports_vulkan": True,
-    },
-    {
-        "key": "cpu",
-        "folder": "whisper.cpu",
-        "label": "CPU",
-        "supports_vulkan": False,
-    },
-    {
-        "key": "legacy",
-        "folder": "whisper.cpp",
-        "label": "Legacy Vulkan",
-        "supports_vulkan": True,
-    },
-)
-
-
-def detect_physical_cpu_core_count() -> tuple[int | None, str | None]:
-    if os.name != "nt" or ctypes is None or wintypes is None:
-        return None, "Physical core detection unavailable on this platform."
-
-    relation_processor_core = 0
-    error_insufficient_buffer = 122
-
-    try:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        get_logical_processor_information_ex = kernel32.GetLogicalProcessorInformationEx
-        get_logical_processor_information_ex.argtypes = [
-            wintypes.DWORD,
-            ctypes.c_void_p,
-            ctypes.POINTER(wintypes.DWORD),
-        ]
-        get_logical_processor_information_ex.restype = wintypes.BOOL
-
-        buffer_size = wintypes.DWORD(0)
-        get_logical_processor_information_ex(
-            relation_processor_core,
-            None,
-            ctypes.byref(buffer_size),
-        )
-        if ctypes.get_last_error() != error_insufficient_buffer or buffer_size.value <= 0:
-            raise OSError(f"buffer probe failed with Win32 error {ctypes.get_last_error()}")
-
-        buffer = ctypes.create_string_buffer(buffer_size.value)
-        if not get_logical_processor_information_ex(
-            relation_processor_core,
-            buffer,
-            ctypes.byref(buffer_size),
-        ):
-            raise OSError(f"processor query failed with Win32 error {ctypes.get_last_error()}")
-
-        core_count = 0
-        offset = 0
-        while offset < buffer_size.value:
-            _, entry_size = struct.unpack_from("II", buffer, offset)
-            if entry_size <= 0:
-                raise ValueError("invalid processor info record size")
-            core_count += 1
-            offset += entry_size
-
-        if core_count <= 0:
-            raise ValueError("Windows returned zero physical cores")
-
-        return core_count, None
-    except (AttributeError, OSError, struct.error, ValueError) as exc:
-        return None, f"Physical core detection failed: {exc}"
 
 
 CPU_LOGICAL_THREAD_COUNT = max(1, os.cpu_count() or 1)
@@ -183,99 +131,6 @@ else:
         f"{CPU_THREAD_FALLBACK_DEBUG_MESSAGE} "
         f"Using {CPU_THREAD_COUNT} logical thread(s)."
     )
-
-
-def build_hidden_subprocess_kwargs() -> dict[str, object]:
-    if WINDOWS_NO_WINDOW == 0:
-        return {}
-
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = 0
-    return {
-        "creationflags": WINDOWS_NO_WINDOW,
-        "startupinfo": startupinfo,
-    }
-
-
-def detect_cpu_name() -> str:
-    if winreg is not None:
-        try:
-            with winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
-            ) as key:
-                value, _ = winreg.QueryValueEx(key, "ProcessorNameString")
-                name = " ".join(str(value).split())
-                if name:
-                    return name
-        except OSError:
-            pass
-
-    for candidate in (
-        os.environ.get("PROCESSOR_IDENTIFIER", ""),
-        platform.processor(),
-        platform.uname().processor,
-    ):
-        name = " ".join(str(candidate).split())
-        if name:
-            return name
-
-    return "CPU"
-
-
-def shorten_device_name(device_name: str) -> str:
-    cleaned = re.sub(r"\([^)]*\)|\[[^\]]*\]|\{[^}]*\}", " ", device_name)
-    cleaned = " ".join(cleaned.split())
-    cleaned = re.sub(r"\s+[a-z]+\b.*$", "", cleaned).strip(" -")
-    return cleaned or " ".join(device_name.split()) or device_name
-
-
-def shorten_cpu_name(cpu_name: str) -> str:
-    return shorten_device_name(cpu_name)
-
-
-def shorten_gpu_name(gpu_name: str) -> str:
-    return shorten_device_name(gpu_name)
-
-
-def detect_gpu_vendor_name(gpu_name: str) -> str | None:
-    normalized = f" {' '.join(gpu_name.split()).lower()} "
-    vendor_patterns = (
-        ("NVIDIA", ("nvidia", "geforce", "quadro", "tesla")),
-        ("AMD", ("amd", "radeon", "ati")),
-        ("Intel", ("intel", "iris", "uhd", "arc")),
-        ("Qualcomm", ("qualcomm", "adreno")),
-        ("Apple", ("apple",)),
-        ("ARM", ("arm", "mali")),
-        ("Imagination", ("imagination", "powervr")),
-        ("Microsoft", ("microsoft", "warp")),
-    )
-    for vendor_name, patterns in vendor_patterns:
-        if any(f" {pattern} " in normalized for pattern in patterns):
-            return vendor_name
-    return None
-
-
-def build_gpu_vendors_payload_value(devices: list[dict[str, object]]) -> str:
-    vendor_names: list[str] = []
-    seen_vendor_names: set[str] = set()
-    for device in devices:
-        vendor_name = detect_gpu_vendor_name(str(device.get("name", "")))
-        if vendor_name and vendor_name not in seen_vendor_names:
-            seen_vendor_names.add(vendor_name)
-            vendor_names.append(vendor_name)
-    return ", ".join(vendor_names)
-
-
-def build_cpu_option_label(cpu_name: str) -> str:
-    cpu_name = shorten_cpu_name(cpu_name)
-    if CPU_PHYSICAL_CORE_COUNT is not None:
-        core_label = "physical core" if CPU_THREAD_COUNT == 1 else "physical cores"
-        return f"CPU only - {cpu_name} - {CPU_THREAD_COUNT} {core_label}"
-
-    thread_label = "logical thread" if CPU_THREAD_COUNT == 1 else "logical threads"
-    return f"CPU only - {cpu_name} - {CPU_THREAD_COUNT} {thread_label}"
 
 
 class TranscriptionCancelled(Exception):
@@ -322,7 +177,7 @@ class App(ctk.CTk):
         self._suspend_input_path_tracking = False
         self._is_closing = False
         self.cpu_name = detect_cpu_name()
-        self.cpu_option_label = build_cpu_option_label(self.cpu_name)
+        self.cpu_option_label = build_cpu_option_label(self.cpu_name, CPU_THREAD_COUNT, CPU_PHYSICAL_CORE_COUNT)
         self.gpu_devices: list[dict[str, object]] = []
         self.gpu_options: dict[str, int | str | None] = {AUTO_GPU_LABEL: None, self.cpu_option_label: "cpu"}
         self.gpu_controls_enabled = True
@@ -1071,10 +926,10 @@ class App(ctk.CTk):
                 self._raise_if_cancelled()
                 if total > 1:
                     self.log(f"========================= Batch item {index} of {total}")
-                self.log(f"========================= processing {config['input_path'].name}\n")
+                self.log(f"========================= processing {config.input_path.name}\n")
                 if debug_enabled:
-                    self.log(f"Selected output format: {config['format'].upper()}")
-                    self.log(f"Selected model: {config['model_path'].name}")
+                    self.log(f"Selected output format: {config.format.upper()}")
+                    self.log(f"Selected model: {config.model_path.name}")
                 try:
                     self._convert_input_to_audio(config, debug_enabled=debug_enabled)
                     self._raise_if_cancelled()
@@ -1090,7 +945,7 @@ class App(ctk.CTk):
                     self._log_cpu_inference_details(selection_label, whisper_runtime)
                     if not cpu_speed_warning_logged:
                         cpu_speed_warning_logged = self._warn_if_cpu_inference_may_be_slow(
-                            config.get("model_info"),
+                            config.model_info,
                             selection_label,
                             whisper_runtime,
                         )
@@ -1107,14 +962,14 @@ class App(ctk.CTk):
                         env=whisper_env,
                     )
 
-                    last_output = config["transcript_output"]
-                    self.log(f"Success. Output file: {config['transcript_output']}")
+                    last_output = config.transcript_output
+                    self.log(f"Success. Output file: {config.transcript_output}")
                     if should_show_batch_progress:
                         self._schedule_ui_update(
                             lambda completed=index, count=total: self._show_batch_progress(completed, count)
                         )
                 finally:
-                    self._cleanup_audio_output(config["audio_output"], log_removal=debug_enabled)
+                    self._cleanup_audio_output(config.audio_output, log_removal=debug_enabled)
 
             self._schedule_ui_update(
                 lambda: (
@@ -1143,9 +998,7 @@ class App(ctk.CTk):
             self.log("")
             configs = self._build_run_configs()
             config = configs[0]
-            input_path = Path(config["input_path"])
-            model_path = Path(config["model_path"])
-            prompt = str(config["prompt"])
+            input_path = config.input_path
             timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
             audio_output = self._build_unique_output_path(
                 input_path,
@@ -1154,7 +1007,7 @@ class App(ctk.CTk):
             )
 
             self.log(f"========================= Benchmarking on {input_path.name}")
-            self.log(f"Selected model: {model_path.name}")
+            self.log(f"Selected model: {config.model_path.name}")
             self._convert_input_to_audio(
                 config,
                 audio_output=audio_output,
@@ -1175,18 +1028,22 @@ class App(ctk.CTk):
                     stem=f"{input_path.stem}{timestamp}.{self._slugify_label(label)}.benchmark",
                 )
                 output_base = transcript_output.with_suffix("")
-                benchmark_outputs.append(transcript_output)
+                benchmark_config = RunConfig(
+                    input_path=config.input_path,
+                    format="txt",
+                    model_path=config.model_path,
+                    model_info=config.model_info,
+                    prompt=config.prompt,
+                    audio_output=audio_output,
+                    output_base=output_base,
+                    transcript_output=transcript_output,
+                )
+                benchmark_outputs.append(benchmark_config.transcript_output)
 
                 whisper_runtime = self._resolve_whisper_runtime(label)
                 whisper_env = self._build_whisper_env(label, whisper_runtime)
                 whisper_command = self._build_whisper_command(
-                    {
-                        "model_path": model_path,
-                        "audio_output": audio_output,
-                        "output_base": output_base,
-                        "prompt": prompt,
-                        "format": "txt",
-                    },
+                    benchmark_config,
                     label,
                     whisper_runtime,
                     debug_enabled=True,
@@ -1197,7 +1054,7 @@ class App(ctk.CTk):
                     f"({Path(whisper_runtime['cli_path']).parent.name})"
                 )
                 self._log_cpu_inference_details(label, whisper_runtime)
-                self._warn_if_cpu_inference_may_be_slow(config.get("model_info"), label, whisper_runtime)
+                self._warn_if_cpu_inference_may_be_slow(config.model_info, label, whisper_runtime)
                 elapsed_seconds = self._run_benchmark_process(whisper_command, whisper_env, label)
                 self.log(f"{elapsed_seconds:.2f} seconds")
         except Exception as exc:
@@ -1213,7 +1070,7 @@ class App(ctk.CTk):
                         pass
             self._schedule_ui_update(lambda: self.set_running_state(False))
 
-    def _build_run_configs(self) -> list[dict[str, Path | str]]:
+    def _build_run_configs(self) -> list[RunConfig]:
         if not FFMPEG_PATH.exists():
             raise FileNotFoundError(f"Missing dependency: {FFMPEG_PATH}")
 
@@ -1235,33 +1092,14 @@ class App(ctk.CTk):
 
         prompt = self.prompt_var.get().strip()
         input_paths = self._get_input_paths()
-        configs: list[dict[str, Path | str]] = []
-
-        for input_path in input_paths:
-            timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
-            audio_output = self._build_unique_output_path(input_path, ".wav")
-            transcript_base_name = f"{input_path.stem}{timestamp}.transcript"
-            transcript_output = self._build_unique_output_path(
-                input_path,
-                f".{selected_format}",
-                stem=transcript_base_name,
-            )
-            output_base = transcript_output.with_suffix("")
-
-            configs.append(
-                {
-                    "input_path": input_path,
-                    "format": selected_format,
-                    "model_path": model_path,
-                    "model_info": model_info,
-                    "prompt": prompt,
-                    "audio_output": audio_output,
-                    "output_base": output_base,
-                    "transcript_output": transcript_output,
-                }
-            )
-
-        return configs
+        
+        return build_run_configs(
+            input_paths=input_paths,
+            model_path=model_path,
+            model_info=model_info,
+            output_format=selected_format,
+            prompt=prompt,
+        )
 
     def _get_input_paths(self) -> list[Path]:
         if self.batch_selected_files:
@@ -1286,51 +1124,29 @@ class App(ctk.CTk):
         suffix: str,
         stem: str | None = None,
     ) -> Path:
-        base_stem = stem or input_path.stem
-        candidate = input_path.with_name(f"{base_stem}{suffix}")
-        index = 1
-
-        while candidate.exists():
-            candidate = input_path.with_name(f"{base_stem}-{index}{suffix}")
-            index += 1
-
-        return candidate
+        """Wrapper for core_logic.build_unique_output_path for backward compatibility."""
+        return build_unique_output_path(input_path, suffix, stem)
 
     def _build_ffmpeg_command(
         self,
-        config: dict[str, Path | str],
+        config: RunConfig,
         *,
         audio_output: Path | None = None,
         include_stats: bool = True,
         duration_seconds: int | None = None,
     ) -> list[str]:
-        command = [
-            str(FFMPEG_PATH),
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-        ]
-        if include_stats:
-            command.append("-stats")
-        command.extend(["-i", str(config["input_path"])])
-        if duration_seconds is not None:
-            command.extend(["-t", str(duration_seconds)])
-        command.extend(
-            [
-                "-vn",
-                "-ac",
-                "1",
-                "-ar",
-                "16000",
-                str(audio_output or config["audio_output"]),
-            ]
+        """Wrapper for core_logic.build_ffmpeg_command for backward compatibility."""
+        return build_ffmpeg_command(
+            input_path=config.input_path,
+            audio_output=audio_output or config.audio_output,
+            ffmpeg_path=FFMPEG_PATH,
+            include_stats=include_stats,
+            duration_seconds=duration_seconds,
         )
-        return command
 
     def _convert_input_to_audio(
         self,
-        config: dict[str, Path | str],
+        config: RunConfig,
         *,
         audio_output: Path | None = None,
         duration_seconds: int | None = None,
@@ -1346,44 +1162,26 @@ class App(ctk.CTk):
 
     def _build_whisper_command(
         self,
-        config: dict[str, Path | str],
+        config: RunConfig,
         selection_label: str,
         runtime: dict[str, object],
         *,
         debug_enabled: bool,
         force_txt: bool = False,
     ) -> list[str]:
-        output_format = "txt" if force_txt else str(config["format"])
-        command = [
-            str(runtime["cli_path"]),
-            "-m",
-            str(config["model_path"]),
-            "-f",
-            str(config["audio_output"]),
-            "-of",
-            str(config["output_base"]),
-            "-np",
-        ]
-
-        if output_format == "txt":
-            command.extend(["-pp", "-otxt", "-nt"])
-        else:
-            if debug_enabled:
-                command.append("-pp")
-            command.append("-osrt")
-
-        if self._is_cpu_selection(selection_label):
-            if bool(runtime["supports_vulkan"]):
-                command.append("-ng")
-            command.extend(["-t", str(CPU_THREAD_COUNT)])
-        elif not bool(runtime["supports_vulkan"]):
-            command.extend(["-t", str(CPU_THREAD_COUNT)])
-
-        prompt = str(config["prompt"])
-        if prompt:
-            command.extend(["--prompt", prompt])
-
-        return command
+        """Wrapper for core_logic.build_whisper_command for backward compatibility."""
+        return build_whisper_command(
+            model_path=config.model_path,
+            audio_output=config.audio_output,
+            output_base=config.output_base,
+            whisper_cli_path=Path(runtime["cli_path"]),
+            output_format="txt" if force_txt else config.format,
+            cpu_thread_count=CPU_THREAD_COUNT,
+            is_cpu_selection=self._is_cpu_selection(selection_label),
+            supports_vulkan=bool(runtime["supports_vulkan"]),
+            debug_enabled=debug_enabled,
+            prompt=config.prompt,
+        )
 
     def _run_process(
         self,
@@ -1468,27 +1266,9 @@ class App(ctk.CTk):
         return elapsed_seconds
 
     def reload_whisper_runtimes(self) -> None:
-        runtimes = self._discover_whisper_runtimes()
+        runtimes = discover_whisper_runtimes(BIN_DIR)
         self.whisper_runtimes = runtimes
         self.whisper_runtime_lookup = {str(runtime["key"]): runtime for runtime in runtimes}
-
-    def _discover_whisper_runtimes(self) -> list[dict[str, object]]:
-        runtimes: list[dict[str, object]] = []
-        for candidate in WHISPER_RUNTIME_CANDIDATES:
-            runtime_dir = BIN_DIR / str(candidate["folder"])
-            cli_path = runtime_dir / "whisper-cli.exe"
-            if not cli_path.exists():
-                continue
-            runtimes.append(
-                {
-                    "key": candidate["key"],
-                    "label": candidate["label"],
-                    "supports_vulkan": candidate["supports_vulkan"],
-                    "dir": runtime_dir,
-                    "cli_path": cli_path,
-                }
-            )
-        return runtimes
 
     def _get_whisper_runtime(self, key: str) -> dict[str, object] | None:
         return self.whisper_runtime_lookup.get(key)
@@ -1499,13 +1279,11 @@ class App(ctk.CTk):
         *,
         allow_fallback: bool = True,
     ) -> dict[str, object] | None:
-        for key in keys:
-            runtime = self._get_whisper_runtime(key)
-            if runtime is not None:
-                return runtime
-        if allow_fallback and self.whisper_runtimes:
-            return self.whisper_runtimes[0]
-        return None
+        return get_preferred_whisper_runtime(
+            self.whisper_runtimes,
+            keys,
+            allow_fallback=allow_fallback,
+        )
 
     def _build_missing_vulkan_runtime_message(self) -> str:
         return (
@@ -1578,34 +1356,7 @@ class App(ctk.CTk):
         self,
         runtime: dict[str, object],
     ) -> tuple[list[dict[str, object]], str | None]:
-        try:
-            result = subprocess.run(
-                [str(runtime["cli_path"]), "--help"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                shell=False,
-                **build_hidden_subprocess_kwargs(),
-            )
-        except OSError as exc:
-            return [], f"WARNING: Could not detect Vulkan GPUs: {exc}"
-
-        devices: list[dict[str, object]] = []
-        for line in result.stdout.splitlines():
-            match = GPU_LINE_RE.match(line.strip())
-            if match is None:
-                continue
-            devices.append(
-                {
-                    "index": int(match.group(1)),
-                    "name": shorten_gpu_name(match.group(2).strip()),
-                    "uma": int(match.group(3)),
-                }
-            )
-
-        return devices, None
+        return detect_vulkan_devices(Path(runtime["cli_path"]))
 
     def _guess_best_gpu_index(self) -> int | None:
         preferred_device = self._get_preferred_gpu_device(self.gpu_devices)
@@ -1627,13 +1378,7 @@ class App(ctk.CTk):
         return env
 
     def _build_auto_gpu_label(self, devices: list[dict[str, object]]) -> str:
-        preferred_device = self._get_preferred_gpu_device(devices)
-        if preferred_device is None:
-            return AUTO_GPU_LABEL
-
-        best_index = int(preferred_device["index"])
-        best_name = str(preferred_device["name"])
-        return f"{AUTO_GPU_LABEL} - GPU {best_index + 1} - {best_name}"
+        return build_auto_gpu_label(devices)
 
     def _is_cpu_selection(self, selection_label: str) -> bool:
         return self.gpu_options.get(selection_label) == "cpu"
@@ -1678,25 +1423,15 @@ class App(ctk.CTk):
 
     @staticmethod
     def _format_model_size_label(size_bytes: int) -> str:
-        gib = 1024 * 1024 * 1024
-        mib = 1024 * 1024
-        if size_bytes >= gib:
-            return f"{size_bytes / gib:.2f} GB"
-        return f"{size_bytes / mib:.0f} MB"
+        return format_model_size_label(size_bytes)
 
     @staticmethod
     def _get_preferred_gpu_device(devices: list[dict[str, object]]) -> dict[str, object] | None:
-        if not devices:
-            return None
-        for device in devices:
-            if int(device["uma"]) == 0:
-                return device
-        return devices[0]
+        return get_preferred_gpu_device(devices)
 
     @staticmethod
     def _slugify_label(label: str) -> str:
-        slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
-        return slug or "benchmark"
+        return slugify_label(label)
 
     def _raise_if_cancelled(self) -> None:
         if self.cancel_requested:
