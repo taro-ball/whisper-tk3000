@@ -10,7 +10,6 @@ It works on most Windows machines. If a Vulkan-capable GPU are available, transc
 - Export transcripts as plain text (`.txt`) or subtitle files (`.srt`).
 - Use an optional initial prompt to help with names, jargon, or context.
 - AMD and Nvidia GPUs are supported (On Intel GPU's, it falls back to the CPU because Intel Vulkan drivers can be inconsistent.)
-- Fall back to CPU execution when Vulkan acceleration is unavailable.
 - Run a built-in benchmark to compare available CPU and GPU backends on your machine.
 - Download recommended Whisper models directly in the app.
 
