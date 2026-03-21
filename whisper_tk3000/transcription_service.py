@@ -8,14 +8,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from core_logic import (
+from .core_logic import (
     RunConfig,
     build_ffmpeg_command,
     build_unique_output_path,
     build_whisper_command,
     slugify_label,
 )
-from platform_runtime import (
+from .platform_runtime import (
     CpuExecutionPolicy,
     build_benchmark_option_labels,
     build_cpu_inference_log_message,

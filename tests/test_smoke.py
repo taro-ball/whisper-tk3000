@@ -1,13 +1,17 @@
-﻿import os
+import os
 import shutil
 import unittest
 import uuid
 import wave
 from pathlib import Path
 
-from core_logic import RunConfig
-from platform_runtime import build_cpu_execution_policy, load_gpu_selection_state
-from transcription_service import ExecutionContext, ServiceCallbacks, TranscriptionService
+from whisper_tk3000.core_logic import RunConfig
+from whisper_tk3000.platform_runtime import build_cpu_execution_policy, load_gpu_selection_state
+from whisper_tk3000.transcription_service import (
+    ExecutionContext,
+    ServiceCallbacks,
+    TranscriptionService,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

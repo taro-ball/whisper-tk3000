@@ -18,26 +18,26 @@ try:
 except ImportError:
     ctypes = None
 
-from core_logic import (
+from .core_logic import (
     RunConfig,
     build_run_configs,
     format_model_size_label,
 )
-from platform_runtime import (
+from .platform_runtime import (
     AUTO_GPU_LABEL,
     build_cpu_execution_policy,
     load_gpu_selection_state,
     resolve_whisper_runtime,
 )
-from model_downloads import (
+from .model_downloads import (
     MODEL_OPTIONS,
     MODEL_OPTIONS_BY_NAME,
     MODEL_REPO_URL,
     ModelDownloadOption,
     download_model,
 )
-from telemetry import TelemetryClient
-from transcription_service import (
+from .telemetry import TelemetryClient
+from .transcription_service import (
     ExecutionContext,
     ServiceCallbacks,
     TranscriptionCancelled,
@@ -45,15 +45,15 @@ from transcription_service import (
 )
 
 
-APP_DIR = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
 APP_NAME = "whisper-tk3000"
 APP_VERSION = "0.4.1"
 APP_TITLE = "whisper-tk3000 audio to text transcriber"
 TELEMETRY_APP_ID = "5FD59222-E42C-4491-AD54-9A8FA5088609"
 TELEMETRY_NAMESPACE = "com.gr"
-BIN_DIR = APP_DIR / "bin"
+BIN_DIR = REPO_ROOT / "bin"
 FFMPEG_PATH = BIN_DIR / "ffmpeg.exe"
-MODELS_DIR = APP_DIR / "models"
+MODELS_DIR = REPO_ROOT / "models"
 MEDIA_SUFFIXES = (
     ".mp4",
     ".mkv",
@@ -984,6 +984,10 @@ class App(ctk.CTk):
             self.log(f"ERROR: Could not open browser: {exc}")
 
 
-if __name__ == "__main__":
+def main() -> None:
     app = App()
     app.mainloop()
+
+
+if __name__ == "__main__":
+    main()

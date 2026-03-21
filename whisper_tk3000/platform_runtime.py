@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from core_logic import build_auto_gpu_label, get_preferred_gpu_device
+from .core_logic import build_auto_gpu_label, get_preferred_gpu_device
 
 try:
     import ctypes

@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from transcription_service import ServiceCallbacks, TranscriptionService
+from whisper_tk3000.transcription_service import ServiceCallbacks, TranscriptionService
 
 
 class _FakeStdout:
@@ -48,7 +48,7 @@ class TranscriptionServiceTests(unittest.TestCase):
         stdout = _FakeStdout(["line 1\n", "line 2\n"])
         process = _FakeProcess(stdout, 0)
 
-        with patch("transcription_service.subprocess.Popen", return_value=process):
+        with patch("whisper_tk3000.transcription_service.subprocess.Popen", return_value=process):
             service._run_process(
                 ["fake-tool.exe"],
                 "fake-tool",
@@ -66,7 +66,7 @@ class TranscriptionServiceTests(unittest.TestCase):
         stdout = _FakeStdout(["problem line\n"])
         process = _FakeProcess(stdout, 7)
 
-        with patch("transcription_service.subprocess.Popen", return_value=process):
+        with patch("whisper_tk3000.transcription_service.subprocess.Popen", return_value=process):
             with self.assertRaisesRegex(RuntimeError, "fake-tool exited with code 7"):
                 service._run_process(
                     ["fake-tool.exe"],

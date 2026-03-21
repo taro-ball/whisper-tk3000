@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 
 source ".venv/Scripts/activate"
-python app.py
+python -m whisper_tk3000
