@@ -1,11 +1,11 @@
-﻿import os
+import os
 import shutil
 import unittest
 import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from platform_runtime import (
+from whisper_tk3000.platform_runtime import (
     AUTO_GPU_LABEL,
     CpuExecutionPolicy,
     build_benchmark_option_labels,

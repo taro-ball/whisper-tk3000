@@ -1,6 +1,6 @@
 # Whisper Transcriber GUI
 
-A free, simple desktop app to turn your audio files into text. It runs entirely offline on your computer, ensuring your data remains completely private. 
+A free, simple desktop app to turn your audio files into text. It runs entirely offline on your computer, ensuring your data remains completely private.
 
 This tool works on most Windows 10 or 11 computers. It uses your graphics card (supporting Intel, AMD, and NVIDIA) to speed up the process, without requiring any complex setup.
 
@@ -43,14 +43,13 @@ This tool works on most Windows 10 or 11 computers. It uses your graphics card (
 - Whisper models are not bundled into the PyInstaller build.
 - Download a model from the app, or place a `.bin` file under `models/`.
 
-
 ### Run locally (PowerShell)
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe app.py
+.\.venv\Scripts\python.exe -m whisper_tk3000
 ```
 
 ### Tests

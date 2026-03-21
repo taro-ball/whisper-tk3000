@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from platform_runtime import build_gpu_vendors_payload_value
+from .platform_runtime import build_gpu_vendors_payload_value
 
 
 @dataclass

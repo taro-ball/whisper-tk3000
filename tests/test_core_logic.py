@@ -1,9 +1,13 @@
-﻿import shutil
+import shutil
 import unittest
 import uuid
 from pathlib import Path
 
-from core_logic import build_ffmpeg_command, build_unique_output_path, build_whisper_command
+from whisper_tk3000.core_logic import (
+    build_ffmpeg_command,
+    build_unique_output_path,
+    build_whisper_command,
+)
 
 
 TESTS_DIR = Path(__file__).resolve().parent

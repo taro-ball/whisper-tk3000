@@ -10,7 +10,7 @@ block_cipher = None
 
 
 a = Analysis(
-    ["app.py"],
+    ["whisper_tk3000/__main__.py"],
     pathex=[],
     binaries=[],
     datas=datas,
