@@ -1,8 +1,19 @@
 # Whisper Transcriber GUI
 
-A free, simple desktop app to turn your audio files into text. It runs entirely offline on your computer, ensuring your data remains completely private.
+A simple desktop app for turning audio files into text. It runs entirely offline on your computer, so your files stay private.
 
-This tool works on most Windows 10 or 11 computers. It uses your graphics card (supporting Intel, AMD, and NVIDIA) to speed up the process, without requiring any complex setup.
+It works on most Windows 10 and 11 machines. If a Vulkan-capable  GPU are available, transcription can run faster with GPU acceleration. Otherwise, it runs on the CPU.
+
+## Features
+- Transcribe common audio and video formats, including `.mp3`, `.wav`, `.m4a`, `.flac`, `.aac`, `.ogg`, `.webm`, `.mp4`, `.mkv`, `.mov`, and `.avi`.
+- Process a single file or a selectable batch from a folder.
+- Export transcripts as plain text (`.txt`) or subtitle files (`.srt`).
+- Use an optional initial prompt to help with names, jargon, or context.
+- Choose automatic GPU selection, a specific Vulkan GPU, or CPU-only execution.
+- Fall back to CPU execution when Vulkan acceleration is unavailable.
+- Run a built-in benchmark to compare available CPU and GPU backends on your machine.
+- Download recommended Whisper models directly in the app.
+
 
 ![App screenshot](docs/images/screenshot.jpg)
 
