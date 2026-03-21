@@ -381,10 +381,12 @@ class TranscriptionService:
             self.current_process = process
 
         try:
-            if process.stdout is not None:
-                for line in process.stdout:
-                    output_lines.append(line)
-                    callbacks.emit_output(line)
+            stdout = process.stdout
+            if stdout is not None:
+                with stdout:
+                    for line in stdout:
+                        output_lines.append(line)
+                        callbacks.emit_output(line)
 
             exit_code = process.wait()
         finally:
@@ -458,3 +460,4 @@ class TranscriptionService:
         if " " in arg or "\t" in arg:
             return f'"{arg}"'
         return arg
+
