@@ -117,6 +117,12 @@ It is responsible for:
 
 Prefer updating `build.ps1` first if the packaging workflow changes.
 
+## Testing Goals
+
+- Keep the default test suite fast, deterministic, and easy for coding agents to run with `python -m unittest discover -s tests`.
+- Prefer tests around `core_logic.py`, `platform_runtime.py`, and `transcription_service.py`; avoid GUI-driven tests through `app.py` unless the behavior cannot be covered elsewhere.
+- Treat end-to-end CPU and Vulkan smoke tests as opt-in integration checks that catch ffmpeg/runtime/CLI drift. They should depend only on local binaries, models, and hardware, and skip cleanly when prerequisites are missing.
+
 ## Editing Guide
 
 - If the app layout, dialogs, or button behavior changes, edit `app.py`.
