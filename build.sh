@@ -1,20 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ ! -d ".venv" ]; then
-  python -m venv .venv
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if ! command -v cygpath >/dev/null 2>&1; then
+  echo "build.sh requires Git Bash with cygpath available." >&2
+  exit 1
 fi
 
-source .venv/Scripts/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m PyInstaller --noconfirm whisper_transcriber.spec
-
-timestamp="$(date +%Y%m%d-%H%M%S)"
-output_dir="./dist/${timestamp}_whisper_transcriber"
-
-rm -rf "$output_dir"
-mv ./dist/whisper_transcriber "$output_dir"
-
-echo "Build complete: $output_dir"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process explorer.exe (Resolve-Path '${output_dir//\//\\}')"
+powershell.exe -ExecutionPolicy Bypass -File "$(cygpath -w "$script_dir/build.ps1")"

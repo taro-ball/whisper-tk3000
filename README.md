@@ -39,22 +39,31 @@ This tool works on most Windows 10 or 11 computers. It uses your graphics card (
 ### Dependencies
 
 - ffmpeg: `bin/ffmpeg.exe`
-- whispercpp: `bin/Vulkan/main64.exe`
+- whisper.cpp runtimes: `bin/whisper.cpu/whisper-cli.exe` and `bin/whisper.vulkan/whisper-cli.exe`
 - Whisper models are not bundled into the PyInstaller build.
 - Download a model from the app, or place a `.bin` file under `models/`.
 
 
-### Run locally
+### Run locally (PowerShell)
 
-```bash
+```powershell
 python -m venv .venv
-source .venv/Scripts/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python app.py
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe app.py
 ```
 
-### Build
+### Build (canonical Windows workflow)
+
+```powershell
+.\build.ps1
+```
+
+`build.ps1` is the canonical build entry point for this repository.
+
+### Optional Git Bash wrapper
+
+If you intentionally use Git Bash on Windows, `build.sh` is a thin wrapper around `build.ps1`.
 
 ```bash
 ./build.sh

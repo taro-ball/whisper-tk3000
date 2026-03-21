@@ -11,8 +11,11 @@ import os
 import re
 import struct
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from core_logic import build_auto_gpu_label, get_preferred_gpu_device
 
 try:
     import ctypes
@@ -30,6 +33,60 @@ try:
     import platform as platform_module
 except ImportError:
     platform_module = None
+
+
+AUTO_GPU_LABEL = "Auto (best guess)"
+GPU_RUNTIME_MISSING_LABEL = "GPU runtime missing"
+GPU_DETECTION_FAILED_LABEL = "Vulkan detection failed"
+GPU_NO_DEVICES_LABEL = "No Vulkan devices"
+SLOW_CPU_MODEL_WARNING_THRESHOLD_BYTES = 150 * 1024 * 1024
+MISSING_VULKAN_RUNTIME_MESSAGE = (
+    "INFO: Hiding GPU options because no Vulkan runtime binary was found. "
+    "Expected bin\\whisper.vulkan\\whisper-cli.exe or "
+    "bin\\whisper.cpp\\whisper-cli.exe."
+)
+MISSING_VULKAN_BACKEND_MESSAGE = (
+    "INFO: Hiding GPU options because the Vulkan binary is present, "
+    "but no Vulkan devices were detected. GPU acceleration is "
+    "unavailable on this machine."
+)
+MISSING_WHISPER_RUNTIME_MESSAGE = (
+    "Missing whisper.cpp runtime. Expected "
+    "bin\\whisper.vulkan\\whisper-cli.exe and/or "
+    "bin\\whisper.cpu\\whisper-cli.exe."
+)
+
+
+@dataclass(frozen=True)
+class CpuExecutionPolicy:
+    cpu_name: str
+    cpu_option_label: str
+    cpu_thread_count: int
+    physical_core_count: int | None
+    thread_count_log_message: str
+
+
+@dataclass(frozen=True)
+class GpuAvailability:
+    status: str
+    devices: list[dict[str, Any]]
+    log_message: str | None
+    note_label: str
+    controls_enabled: bool
+
+
+@dataclass(frozen=True)
+class GpuSelectionState:
+    runtimes: list[dict[str, Any]]
+    runtime_lookup: dict[str, dict[str, Any]]
+    devices: list[dict[str, Any]]
+    options: dict[str, int | str | None]
+    values: list[str]
+    selected_value: str
+    log_message: str | None
+    note_label: str
+    controls_enabled: bool
+    cpu_option_label: str
 
 
 # ============================================================================
@@ -237,6 +294,35 @@ def build_cpu_option_label(cpu_name: str, cpu_thread_count: int, physical_core_c
     return f"CPU only - {cpu_name} - {cpu_thread_count} {thread_label}"
 
 
+def build_cpu_execution_policy() -> CpuExecutionPolicy:
+    """Build the CPU-related execution policy used by UI and services."""
+    cpu_name = detect_cpu_name()
+    logical_thread_count = max(1, os.cpu_count() or 1)
+    physical_core_count, fallback_message = detect_physical_cpu_core_count()
+    cpu_thread_count = physical_core_count or logical_thread_count
+
+    if physical_core_count is not None:
+        thread_count_log_message = (
+            f"Using {cpu_thread_count} physical core(s) for CPU thread count."
+        )
+    else:
+        thread_count_log_message = (
+            f"{fallback_message} Using {cpu_thread_count} logical thread(s)."
+        )
+
+    return CpuExecutionPolicy(
+        cpu_name=cpu_name,
+        cpu_option_label=build_cpu_option_label(
+            cpu_name,
+            cpu_thread_count,
+            physical_core_count,
+        ),
+        cpu_thread_count=cpu_thread_count,
+        physical_core_count=physical_core_count,
+        thread_count_log_message=thread_count_log_message,
+    )
+
+
 # ============================================================================
 # GPU Detection (Vulkan)
 # ============================================================================
@@ -385,3 +471,213 @@ def get_preferred_whisper_runtime(
         return runtimes[0]
     
     return None
+
+
+def get_vulkan_gpu_availability(runtimes: list[dict[str, Any]]) -> GpuAvailability:
+    """Describe whether GPU-backed Vulkan execution is available."""
+    runtime = get_preferred_whisper_runtime(
+        runtimes,
+        ("vulkan", "legacy"),
+        allow_fallback=False,
+    )
+    if runtime is None:
+        return GpuAvailability(
+            status="runtime_missing",
+            devices=[],
+            log_message=MISSING_VULKAN_RUNTIME_MESSAGE,
+            note_label=GPU_RUNTIME_MISSING_LABEL,
+            controls_enabled=False,
+        )
+
+    devices, detection_message = detect_vulkan_devices(Path(runtime["cli_path"]))
+    if detection_message is not None:
+        return GpuAvailability(
+            status="detection_failed",
+            devices=[],
+            log_message=detection_message,
+            note_label=GPU_DETECTION_FAILED_LABEL,
+            controls_enabled=True,
+        )
+    if not devices:
+        return GpuAvailability(
+            status="no_devices",
+            devices=[],
+            log_message=MISSING_VULKAN_BACKEND_MESSAGE,
+            note_label=GPU_NO_DEVICES_LABEL,
+            controls_enabled=True,
+        )
+
+    return GpuAvailability(
+        status="available",
+        devices=devices,
+        log_message=None,
+        note_label="",
+        controls_enabled=True,
+    )
+
+
+def load_gpu_selection_state(
+    bin_dir: Path,
+    current_selection: str,
+    cpu_policy: CpuExecutionPolicy,
+) -> GpuSelectionState:
+    """Build the UI-facing GPU selection state from runtime policy."""
+    runtimes = discover_whisper_runtimes(bin_dir)
+    runtime_lookup = {str(runtime["key"]): runtime for runtime in runtimes}
+    availability = get_vulkan_gpu_availability(runtimes)
+    devices = list(availability.devices)
+    values: list[str] = []
+    options: dict[str, int | str | None] = {}
+
+    if availability.status == "available" and devices:
+        auto_label = build_auto_gpu_label(devices)
+        values.append(auto_label)
+        options[auto_label] = None
+
+    if availability.status == "available":
+        for display_index, device in enumerate(devices, start=1):
+            label = f"GPU {display_index} - {device['name']}"
+            values.append(label)
+            options[label] = int(device["index"])
+
+    values.append(cpu_policy.cpu_option_label)
+    options[cpu_policy.cpu_option_label] = "cpu"
+
+    if availability.status == "runtime_missing":
+        selected_value = cpu_policy.cpu_option_label
+    elif current_selection in options:
+        selected_value = current_selection
+    elif devices:
+        selected_value = values[0]
+    else:
+        selected_value = cpu_policy.cpu_option_label
+
+    return GpuSelectionState(
+        runtimes=runtimes,
+        runtime_lookup=runtime_lookup,
+        devices=devices,
+        options=options,
+        values=values,
+        selected_value=selected_value,
+        log_message=availability.log_message,
+        note_label=availability.note_label,
+        controls_enabled=availability.controls_enabled,
+        cpu_option_label=cpu_policy.cpu_option_label,
+    )
+
+
+def is_cpu_selection(
+    selection_label: str,
+    gpu_options: dict[str, int | str | None],
+) -> bool:
+    return gpu_options.get(selection_label) == "cpu"
+
+
+def is_cpu_inference(
+    selection_label: str,
+    runtime: dict[str, Any],
+    gpu_options: dict[str, int | str | None],
+) -> bool:
+    return is_cpu_selection(selection_label, gpu_options) or not bool(runtime["supports_vulkan"])
+
+
+def resolve_whisper_runtime(
+    bin_dir: Path,
+    selection_label: str,
+    gpu_options: dict[str, int | str | None],
+) -> dict[str, Any]:
+    runtimes = discover_whisper_runtimes(bin_dir)
+    if is_cpu_selection(selection_label, gpu_options):
+        runtime = get_preferred_whisper_runtime(
+            runtimes,
+            ("cpu", "vulkan", "legacy"),
+        )
+    else:
+        runtime = get_preferred_whisper_runtime(
+            runtimes,
+            ("vulkan", "legacy", "cpu"),
+        )
+
+    if runtime is None:
+        raise FileNotFoundError(MISSING_WHISPER_RUNTIME_MESSAGE)
+
+    return runtime
+
+
+def guess_best_gpu_index(devices: list[dict[str, Any]]) -> int | None:
+    preferred_device = get_preferred_gpu_device(devices)
+    if preferred_device is None:
+        return None
+    return int(preferred_device["index"])
+
+
+def build_whisper_env(
+    selection_label: str,
+    runtime: dict[str, Any],
+    gpu_options: dict[str, int | str | None],
+    gpu_devices: list[dict[str, Any]],
+) -> dict[str, str]:
+    env = dict(os.environ)
+    if not bool(runtime["supports_vulkan"]):
+        return env
+
+    selected_gpu = gpu_options.get(selection_label)
+    if selected_gpu == "cpu":
+        return env
+    if selected_gpu is None:
+        selected_gpu = guess_best_gpu_index(gpu_devices)
+    if isinstance(selected_gpu, int):
+        env["GGML_VK_VISIBLE_DEVICES"] = str(selected_gpu)
+    return env
+
+
+def build_cpu_inference_log_message(
+    cpu_policy: CpuExecutionPolicy,
+    selection_label: str,
+    runtime: dict[str, Any],
+    gpu_options: dict[str, int | str | None],
+) -> str | None:
+    if is_cpu_selection(selection_label, gpu_options):
+        return cpu_policy.thread_count_log_message
+
+    if not bool(runtime["supports_vulkan"]):
+        return (
+            "WARNING: Vulkan runtime not available. Falling back to CPU runtime. "
+            f"{cpu_policy.thread_count_log_message}"
+        )
+
+    return None
+
+
+def build_cpu_slow_warning(
+    model_info: object,
+    selection_label: str,
+    runtime: dict[str, Any],
+    gpu_options: dict[str, int | str | None],
+) -> str | None:
+    if not is_cpu_inference(selection_label, runtime, gpu_options):
+        return None
+
+    if not isinstance(model_info, dict):
+        return None
+
+    model_size_bytes = int(model_info["size_bytes"])
+    if model_size_bytes <= SLOW_CPU_MODEL_WARNING_THRESHOLD_BYTES:
+        return None
+
+    model_size_label = str(model_info["size_label"])
+    model_name = str(model_info["name"])
+    return f"WARNING: CPU inference with model {model_name} [{model_size_label}] may be slow."
+
+
+def build_benchmark_option_labels(
+    gpu_options: dict[str, int | str | None],
+    cpu_option_label: str,
+) -> list[str]:
+    labels = [cpu_option_label]
+    labels.extend(
+        label
+        for label in gpu_options.keys()
+        if label != cpu_option_label and not label.startswith(AUTO_GPU_LABEL)
+    )
+    return labels

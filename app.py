@@ -1,15 +1,8 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import queue
-import re
-import subprocess
 import threading
-import time
-import urllib.request
-import uuid
 import webbrowser
 from collections.abc import Callable
 from datetime import datetime
@@ -28,27 +21,27 @@ except ImportError:
 from core_logic import (
     RunConfig,
     build_run_configs,
-    build_ffmpeg_command,
-    build_whisper_command,
-    build_unique_output_path,
-    build_auto_gpu_label,
     format_model_size_label,
-    get_preferred_gpu_device,
-    slugify_label,
 )
 from platform_runtime import (
-    detect_physical_cpu_core_count,
-    detect_cpu_name,
-    shorten_device_name,
-    shorten_cpu_name,
-    shorten_gpu_name,
-    detect_gpu_vendor_name,
-    build_gpu_vendors_payload_value,
-    build_cpu_option_label,
-    build_hidden_subprocess_kwargs,
-    detect_vulkan_devices,
-    discover_whisper_runtimes,
-    get_preferred_whisper_runtime,
+    AUTO_GPU_LABEL,
+    build_cpu_execution_policy,
+    load_gpu_selection_state,
+    resolve_whisper_runtime,
+)
+from model_downloads import (
+    MODEL_OPTIONS,
+    MODEL_OPTIONS_BY_NAME,
+    MODEL_REPO_URL,
+    ModelDownloadOption,
+    download_model,
+)
+from telemetry import TelemetryClient
+from transcription_service import (
+    ExecutionContext,
+    ServiceCallbacks,
+    TranscriptionCancelled,
+    TranscriptionService,
 )
 
 
@@ -58,11 +51,9 @@ APP_VERSION = "0.4.1"
 APP_TITLE = "whisper-tk3000 audio to text transcriber"
 TELEMETRY_APP_ID = "5FD59222-E42C-4491-AD54-9A8FA5088609"
 TELEMETRY_NAMESPACE = "com.gr"
-TELEMETRY_URL = f"https://nom.telemetrydeck.com/v2/namespace/{TELEMETRY_NAMESPACE}/"
 BIN_DIR = APP_DIR / "bin"
 FFMPEG_PATH = BIN_DIR / "ffmpeg.exe"
 MODELS_DIR = APP_DIR / "models"
-MODEL_REPO_URL = "https://huggingface.co/ggerganov/whisper.cpp/tree/main"
 MEDIA_SUFFIXES = (
     ".mp4",
     ".mkv",
@@ -76,30 +67,6 @@ MEDIA_SUFFIXES = (
     ".ogg",
     ".webm",
 )
-MODEL_OPTIONS = [
-    {
-        "name": "ggml-base.en.bin",
-        "size_label": "148 MB",
-        "size_bytes": 148 * 1024 * 1024,
-        "label": "balanced (english only)",
-        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin",
-    },
-    {
-        "name": "ggml-large-v3-turbo.bin",
-        "size_label": "1.62 GB",
-        "size_bytes": int(1.62 * 1024 * 1024 * 1024),
-        "label": "precise, multilingual, but slower",
-        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin",
-    },
-    {
-        "name": "ggml-tiny.en.bin",
-        "size_label": "77 MB",
-        "size_bytes": 77 * 1024 * 1024,
-        "label": "good enough, fast (english only)",
-        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin",
-    },
-]
-MODEL_OPTIONS_BY_NAME = {str(option["name"]): option for option in MODEL_OPTIONS}
 FORMAT_OPTIONS = {
     "srt subtitle": "srt",
     "plain text": "txt",
@@ -109,32 +76,6 @@ SUPPORTED_MEDIA_TYPES = [
     ("Media files", " ".join(f"*{suffix}" for suffix in MEDIA_SUFFIXES)),
     ("All files", "*.*"),
 ]
-WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
-# GPU-related constants
-AUTO_GPU_LABEL = "Auto (best guess)"
-GPU_RUNTIME_MISSING_LABEL = "GPU runtime missing"
-GPU_DETECTION_FAILED_LABEL = "Vulkan detection failed"
-GPU_NO_DEVICES_LABEL = "No Vulkan devices"
-SLOW_CPU_MODEL_WARNING_THRESHOLD_BYTES = 150 * 1024 * 1024
-
-
-CPU_LOGICAL_THREAD_COUNT = max(1, os.cpu_count() or 1)
-CPU_PHYSICAL_CORE_COUNT, CPU_THREAD_FALLBACK_DEBUG_MESSAGE = detect_physical_cpu_core_count()
-CPU_THREAD_COUNT = CPU_PHYSICAL_CORE_COUNT or CPU_LOGICAL_THREAD_COUNT
-if CPU_PHYSICAL_CORE_COUNT is not None:
-    CPU_THREAD_COUNT_LOG_MESSAGE = (
-        f"Using {CPU_THREAD_COUNT} physical core(s) for CPU thread count."
-    )
-else:
-    CPU_THREAD_COUNT_LOG_MESSAGE = (
-        f"{CPU_THREAD_FALLBACK_DEBUG_MESSAGE} "
-        f"Using {CPU_THREAD_COUNT} logical thread(s)."
-    )
-
-
-class TranscriptionCancelled(Exception):
-    pass
 
 
 class App(ctk.CTk):
@@ -151,9 +92,7 @@ class App(ctk.CTk):
         self.output_queue: queue.Queue[str] = queue.Queue()
         self.is_running = False
         self.transcription_running = False
-        self.cancel_requested = False
-        self.current_process: subprocess.Popen[str] | None = None
-        self.process_lock = threading.Lock()
+        self.transcription_service = TranscriptionService()
 
         self.input_path_var = tk.StringVar()
         self.format_var = tk.StringVar(value="srt subtitle")
@@ -161,7 +100,7 @@ class App(ctk.CTk):
         self.gpu_var = tk.StringVar(value=AUTO_GPU_LABEL)
         self.prompt_var = tk.StringVar()
         self.debug_var = tk.BooleanVar(value=False)
-        self.download_model_var = tk.StringVar(value=MODEL_OPTIONS[0]["name"])
+        self.download_model_var = tk.StringVar(value=MODEL_OPTIONS[0].name)
         self.available_models: list[dict[str, object]] = []
         self.available_models_by_name: dict[str, dict[str, object]] = {}
         self.model_display_lookup: dict[str, str] = {}
@@ -172,17 +111,26 @@ class App(ctk.CTk):
         self.batch_selected_files: list[Path] = []
         self.batch_file_rows: list[Path] = []
         self.batch_tree: ttk.Treeview | None = None
-        self.download_telemetry_sent = False
-        self.telemetry_session_id = str(uuid.uuid4())
+        self.telemetry_client = TelemetryClient(
+            app_id=TELEMETRY_APP_ID,
+            namespace=TELEMETRY_NAMESPACE,
+            app_version=APP_VERSION,
+        )
         self._suspend_input_path_tracking = False
         self._is_closing = False
-        self.cpu_name = detect_cpu_name()
-        self.cpu_option_label = build_cpu_option_label(self.cpu_name, CPU_THREAD_COUNT, CPU_PHYSICAL_CORE_COUNT)
+        self.cpu_policy = build_cpu_execution_policy()
+        self.cpu_name = self.cpu_policy.cpu_name
+        self.cpu_option_label = self.cpu_policy.cpu_option_label
         self.gpu_devices: list[dict[str, object]] = []
         self.gpu_options: dict[str, int | str | None] = {AUTO_GPU_LABEL: None, self.cpu_option_label: "cpu"}
         self.gpu_controls_enabled = True
-        self.whisper_runtimes: list[dict[str, object]] = []
-        self.whisper_runtime_lookup: dict[str, dict[str, object]] = {}
+        self.service_callbacks = ServiceCallbacks(
+            log=self.log,
+            emit_output=self.output_queue.put,
+            on_batch_progress=lambda completed, total: self._schedule_ui_update(
+                lambda completed=completed, total=total: self._show_batch_progress(completed, total)
+            ),
+        )
 
         self.input_path_var.trace_add("write", self._on_input_path_changed)
 
@@ -636,43 +584,20 @@ class App(ctk.CTk):
         return self.available_models_by_name.get(model_name)
 
     def reload_gpu_options(self) -> None:
-        self.reload_whisper_runtimes()
-        gpu_availability = self._get_vulkan_gpu_availability()
-        devices = list(gpu_availability["devices"])
-        values: list[str] = []
-        options: dict[str, int | str | None] = {}
-
-        if gpu_availability["status"] == "available" and devices:
-            auto_label = self._build_auto_gpu_label(devices)
-            values.append(auto_label)
-            options[auto_label] = None
-
-        if gpu_availability["status"] == "available":
-            for display_index, device in enumerate(devices, start=1):
-                label = f"GPU {display_index} - {device['name']}"
-                values.append(label)
-                options[label] = int(device["index"])
-
-        values.append(self.cpu_option_label)
-        options[self.cpu_option_label] = "cpu"
-
-        current = self.gpu_var.get()
-        self.gpu_devices = devices
-        self.gpu_options = options
-        self.gpu_menu.configure(values=values)
-        self.gpu_controls_enabled = bool(gpu_availability["controls_enabled"])
-        log_message = str(gpu_availability["log_message"] or "").strip()
+        runtime_state = load_gpu_selection_state(
+            BIN_DIR,
+            self.gpu_var.get().strip(),
+            self.cpu_policy,
+        )
+        self.gpu_devices = runtime_state.devices
+        self.gpu_options = runtime_state.options
+        self.gpu_menu.configure(values=runtime_state.values)
+        self.gpu_controls_enabled = runtime_state.controls_enabled
+        log_message = str(runtime_state.log_message or "").strip()
         if log_message:
             self.log(log_message)
-        if gpu_availability["status"] == "runtime_missing":
-            self.gpu_var.set(self.cpu_option_label)
-        elif current in options:
-            self.gpu_var.set(current)
-        elif devices:
-            self.gpu_var.set(values[0])
-        else:
-            self.gpu_var.set(self.cpu_option_label)
-        self.gpu_note_label.configure(text=str(gpu_availability["note_label"]))
+        self.gpu_var.set(runtime_state.selected_value)
+        self.gpu_note_label.configure(text=runtime_state.note_label)
         self._sync_gpu_controls_state()
 
     def _sync_gpu_controls_state(self) -> None:
@@ -741,12 +666,12 @@ class App(ctk.CTk):
         options_frame.grid_columnconfigure(0, weight=1)
 
         for index, option in enumerate(MODEL_OPTIONS):
-            text = f"{option['name']} [{option['size_label']}] - {option['label']}"
+            text = f"{option.name} [{option.size_label}] - {option.label}"
             ctk.CTkRadioButton(
                 options_frame,
                 text=text,
                 variable=self.download_model_var,
-                value=option["name"],
+                value=option.name,
             ).grid(row=index, column=0, padx=16, pady=8, sticky="w")
 
         actions_frame = ctk.CTkFrame(dialog, fg_color="transparent")
@@ -818,7 +743,7 @@ class App(ctk.CTk):
             self.log("ERROR: No download model selected.")
             return
 
-        self._send_download_telemetry_once()
+        self.telemetry_client.send_once_async("model_download_pressed", self.gpu_devices)
         self.close_download_dialog()
         self.set_running_state(True)
         worker = threading.Thread(
@@ -828,25 +753,13 @@ class App(ctk.CTk):
         )
         worker.start()
 
-    def _download_model(self, model_option: dict[str, str | int]) -> None:
-        destination = MODELS_DIR / str(model_option["name"])
-        temp_destination = destination.with_suffix(destination.suffix + ".part")
+    def _download_model(self, model_option: ModelDownloadOption) -> None:
         try:
-            MODELS_DIR.mkdir(parents=True, exist_ok=True)
-            self.log(f"Downloading model from {model_option['url']}")
-            self.log(f"Saving model to {destination}")
-            self._download_file(str(model_option["url"]), temp_destination)
-            temp_destination.replace(destination)
-            self.log(f"Model download complete: {destination.name}")
+            destination = download_model(model_option, MODELS_DIR, log=self.log)
             self._schedule_ui_update(self.reload_models)
             self._schedule_ui_update(lambda: self._set_selected_model_name(destination.name))
         except Exception as exc:
             self.log(f"ERROR: Failed to download model: {exc}")
-            if temp_destination.exists():
-                try:
-                    temp_destination.unlink()
-                except OSError:
-                    pass
         finally:
             self._schedule_ui_update(lambda: self.set_running_state(False))
 
@@ -855,7 +768,7 @@ class App(ctk.CTk):
             return
 
         self._set_result_path(None)
-        self.cancel_requested = False
+        self.transcription_service.reset_cancellation()
         self.transcription_running = True
         self.set_running_state(True)
         worker = threading.Thread(target=self._execute_transcription, daemon=True)
@@ -867,6 +780,7 @@ class App(ctk.CTk):
 
         self.reload_gpu_options()
         self._set_result_path(None)
+        self.transcription_service.reset_cancellation()
         self.set_running_state(True)
         worker = threading.Thread(target=self._execute_benchmark, daemon=True)
         worker.start()
@@ -883,99 +797,26 @@ class App(ctk.CTk):
         if not should_cancel:
             return
 
-        if not self.cancel_requested:
-            self.cancel_requested = True
+        if self.transcription_service.cancel():
             self.log("Cancellation requested. Stopping the current process...")
-
-        with self.process_lock:
-            process = self.current_process
-
-        if process is not None and process.poll() is None:
-            try:
-                process.terminate()
-            except OSError as exc:
-                self.log(f"WARNING: Failed to terminate the current process: {exc}")
 
     def on_close(self) -> None:
         self._is_closing = True
-        with self.process_lock:
-            process = self.current_process
-
-        if process is not None and process.poll() is None:
-            try:
-                process.kill()
-            except OSError:
-                pass
-
+        self.transcription_service.kill_active_process()
         self.destroy()
 
     def _execute_transcription(self) -> None:
-        should_show_batch_progress = len(self.batch_selected_files) > 1
-        debug_enabled = self.debug_var.get()
-        cpu_speed_warning_logged = False
+        should_show_batch_progress = False
         try:
-            self.log("")
             configs = self._build_run_configs()
-            total = len(configs)
-            last_output: Path | None = None
-
-            if should_show_batch_progress:
-                self._schedule_ui_update(lambda: self._show_batch_progress(1, total))
-
-            for index, config in enumerate(configs, start=1):
-                self._raise_if_cancelled()
-                if total > 1:
-                    self.log(f"========================= Batch item {index} of {total}")
-                self.log(f"========================= processing {config.input_path.name}\n")
-                if debug_enabled:
-                    self.log(f"Selected output format: {config.format.upper()}")
-                    self.log(f"Selected model: {config.model_path.name}")
-                try:
-                    self._convert_input_to_audio(config, debug_enabled=debug_enabled)
-                    self._raise_if_cancelled()
-
-                    selection_label = self.gpu_var.get().strip()
-                    whisper_runtime = self._resolve_whisper_runtime(selection_label)
-                    whisper_env = self._build_whisper_env(selection_label, whisper_runtime)
-                    if debug_enabled or index == 1:
-                        self.log(
-                            f"Using whisper.cpp runtime: {whisper_runtime['label']} "
-                            f"({Path(whisper_runtime['cli_path']).parent.name})"
-                        )
-                    self._log_cpu_inference_details(selection_label, whisper_runtime)
-                    if not cpu_speed_warning_logged:
-                        cpu_speed_warning_logged = self._warn_if_cpu_inference_may_be_slow(
-                            config.model_info,
-                            selection_label,
-                            whisper_runtime,
-                        )
-                    whisper_command = self._build_whisper_command(
-                        config,
-                        selection_label,
-                        whisper_runtime,
-                        debug_enabled=debug_enabled,
-                    )
-                    self._run_process(
-                        whisper_command,
-                        "whisper.cpp",
-                        log_details=debug_enabled,
-                        env=whisper_env,
-                    )
-
-                    last_output = config.transcript_output
-                    self.log(f"Success. Output file: {config.transcript_output}")
-                    if should_show_batch_progress:
-                        self._schedule_ui_update(
-                            lambda completed=index, count=total: self._show_batch_progress(completed, count)
-                        )
-                finally:
-                    self._cleanup_audio_output(config.audio_output, log_removal=debug_enabled)
-
+            should_show_batch_progress = len(configs) > 1
+            outcome = self.transcription_service.run_transcription(
+                configs,
+                self._build_execution_context(),
+                self.service_callbacks,
+            )
             self._schedule_ui_update(
-                lambda: (
-                    self._set_result_path(last_output),
-                    self.reveal_result_file() if last_output is not None else None,
-                )
+                lambda path=outcome.last_output: self._show_transcription_result(path)
             )
         except TranscriptionCancelled:
             self.log("Transcription cancelled.")
@@ -985,96 +826,32 @@ class App(ctk.CTk):
             self._schedule_ui_update(lambda: self._set_result_path(None))
         finally:
             self.transcription_running = False
-            self.cancel_requested = False
+            self.transcription_service.reset_cancellation()
             if should_show_batch_progress:
                 self._schedule_ui_update(self._restore_batch_input_summary)
             self._schedule_ui_update(lambda: self.set_running_state(False))
 
     def _execute_benchmark(self) -> None:
-        audio_output: Path | None = None
-        benchmark_outputs: list[Path] = []
-        debug_enabled = self.debug_var.get()
         try:
-            self.log("")
             configs = self._build_run_configs()
-            config = configs[0]
-            input_path = config.input_path
-            timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
-            audio_output = self._build_unique_output_path(
-                input_path,
-                ".wav",
-                stem=f"{input_path.stem}{timestamp}.benchmark",
+            self.transcription_service.run_benchmark(
+                configs[0],
+                self._build_execution_context(),
+                self.service_callbacks,
             )
-
-            self.log(f"========================= Benchmarking on {input_path.name}")
-            self.log(f"Selected model: {config.model_path.name}")
-            self._convert_input_to_audio(
-                config,
-                audio_output=audio_output,
-                duration_seconds=120,
-                debug_enabled=debug_enabled,
-            )
-
-            option_labels = [self.cpu_option_label]
-            option_labels.extend(
-                label
-                for label in self.gpu_options.keys()
-                if label != self.cpu_option_label and not label.startswith(AUTO_GPU_LABEL)
-            )
-            for label in option_labels:
-                transcript_output = self._build_unique_output_path(
-                    input_path,
-                    ".txt",
-                    stem=f"{input_path.stem}{timestamp}.{self._slugify_label(label)}.benchmark",
-                )
-                output_base = transcript_output.with_suffix("")
-                benchmark_config = RunConfig(
-                    input_path=config.input_path,
-                    format="txt",
-                    model_path=config.model_path,
-                    model_info=config.model_info,
-                    prompt=config.prompt,
-                    audio_output=audio_output,
-                    output_base=output_base,
-                    transcript_output=transcript_output,
-                )
-                benchmark_outputs.append(benchmark_config.transcript_output)
-
-                whisper_runtime = self._resolve_whisper_runtime(label)
-                whisper_env = self._build_whisper_env(label, whisper_runtime)
-                whisper_command = self._build_whisper_command(
-                    benchmark_config,
-                    label,
-                    whisper_runtime,
-                    debug_enabled=True,
-                    force_txt=True,
-                )
-                self.log(
-                    f"Benchmarking {label} with {whisper_runtime['label']} "
-                    f"({Path(whisper_runtime['cli_path']).parent.name})"
-                )
-                self._log_cpu_inference_details(label, whisper_runtime)
-                self._warn_if_cpu_inference_may_be_slow(config.model_info, label, whisper_runtime)
-                elapsed_seconds = self._run_benchmark_process(whisper_command, whisper_env, label)
-                self.log(f"{elapsed_seconds:.2f} seconds")
+        except TranscriptionCancelled:
+            self.log("Benchmark cancelled.")
         except Exception as exc:
             self.log(f"ERROR: {exc}")
         finally:
-            if audio_output is not None:
-                self._cleanup_audio_output(audio_output, log_removal=debug_enabled)
-            for output_path in benchmark_outputs:
-                if output_path.exists():
-                    try:
-                        output_path.unlink()
-                    except OSError:
-                        pass
+            self.transcription_service.reset_cancellation()
             self._schedule_ui_update(lambda: self.set_running_state(False))
 
     def _build_run_configs(self) -> list[RunConfig]:
         if not FFMPEG_PATH.exists():
             raise FileNotFoundError(f"Missing dependency: {FFMPEG_PATH}")
 
-        self._resolve_whisper_runtime(self.gpu_var.get().strip())
+        resolve_whisper_runtime(BIN_DIR, self.gpu_var.get().strip(), self.gpu_options)
 
         selected_model = self._get_selected_model_name()
         if not selected_model or selected_model == NO_MODELS_LABEL:
@@ -1118,334 +895,20 @@ class App(ctk.CTk):
 
         return [input_path]
 
-    def _build_unique_output_path(
-        self,
-        input_path: Path,
-        suffix: str,
-        stem: str | None = None,
-    ) -> Path:
-        """Wrapper for core_logic.build_unique_output_path for backward compatibility."""
-        return build_unique_output_path(input_path, suffix, stem)
-
-    def _build_ffmpeg_command(
-        self,
-        config: RunConfig,
-        *,
-        audio_output: Path | None = None,
-        include_stats: bool = True,
-        duration_seconds: int | None = None,
-    ) -> list[str]:
-        """Wrapper for core_logic.build_ffmpeg_command for backward compatibility."""
-        return build_ffmpeg_command(
-            input_path=config.input_path,
-            audio_output=audio_output or config.audio_output,
+    def _build_execution_context(self) -> ExecutionContext:
+        return ExecutionContext(
             ffmpeg_path=FFMPEG_PATH,
-            include_stats=include_stats,
-            duration_seconds=duration_seconds,
+            bin_dir=BIN_DIR,
+            cpu_policy=self.cpu_policy,
+            gpu_selection_label=self.gpu_var.get().strip(),
+            gpu_options=dict(self.gpu_options),
+            gpu_devices=list(self.gpu_devices),
+            debug_enabled=self.debug_var.get(),
         )
-
-    def _convert_input_to_audio(
-        self,
-        config: RunConfig,
-        *,
-        audio_output: Path | None = None,
-        duration_seconds: int | None = None,
-        debug_enabled: bool = False,
-    ) -> None:
-        ffmpeg_command = self._build_ffmpeg_command(
-            config,
-            audio_output=audio_output,
-            include_stats=debug_enabled,
-            duration_seconds=duration_seconds,
-        )
-        self._run_process(ffmpeg_command, "ffmpeg", log_details=debug_enabled)
-
-    def _build_whisper_command(
-        self,
-        config: RunConfig,
-        selection_label: str,
-        runtime: dict[str, object],
-        *,
-        debug_enabled: bool,
-        force_txt: bool = False,
-    ) -> list[str]:
-        """Wrapper for core_logic.build_whisper_command for backward compatibility."""
-        return build_whisper_command(
-            model_path=config.model_path,
-            audio_output=config.audio_output,
-            output_base=config.output_base,
-            whisper_cli_path=Path(runtime["cli_path"]),
-            output_format="txt" if force_txt else config.format,
-            cpu_thread_count=CPU_THREAD_COUNT,
-            is_cpu_selection=self._is_cpu_selection(selection_label),
-            supports_vulkan=bool(runtime["supports_vulkan"]),
-            debug_enabled=debug_enabled,
-            prompt=config.prompt,
-        )
-
-    def _run_process(
-        self,
-        command: list[str],
-        tool_name: str,
-        log_details: bool = True,
-        env: dict[str, str] | None = None,
-    ) -> None:
-        self._raise_if_cancelled()
-        if log_details:
-            self.log(f"Running {tool_name}: {' '.join(self._quote_argument(arg) for arg in command)}")
-        output_lines: list[str] = []
-        try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                shell=False,
-                env=env,
-                **build_hidden_subprocess_kwargs(),
-            )
-        except OSError as exc:
-            raise RuntimeError(f"Failed to start {tool_name}: {exc}") from exc
-
-        with self.process_lock:
-            self.current_process = process
-
-        try:
-            if process.stdout is not None:
-                for line in process.stdout:
-                    output_lines.append(line)
-                    self.output_queue.put(line)
-
-            exit_code = process.wait()
-        finally:
-            with self.process_lock:
-                if self.current_process is process:
-                    self.current_process = None
-
-        if self.cancel_requested:
-            raise TranscriptionCancelled()
-
-        if exit_code != 0:
-            if tool_name == "ffmpeg":
-                combined_output = "".join(output_lines)
-                if "Duration: N/A" in combined_output or "Invalid duration" in combined_output:
-                    raise RuntimeError("ffmpeg reported an invalid duration for the selected input.")
-            raise RuntimeError(f"{tool_name} exited with code {exit_code}")
-
-        if log_details:
-            self.log(f"{tool_name} finished successfully.")
-
-    def _run_benchmark_process(
-        self,
-        command: list[str],
-        env: dict[str, str],
-        selection_label: str,
-    ) -> float:
-        started_at = time.perf_counter()
-        try:
-            process = subprocess.run(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                shell=False,
-                env=env,
-                **build_hidden_subprocess_kwargs(),
-            )
-        except OSError as exc:
-            raise RuntimeError(f"Failed to start benchmark for {selection_label}: {exc}") from exc
-
-        elapsed_seconds = time.perf_counter() - started_at
-        if process.returncode != 0:
-            raise RuntimeError(f"Benchmark failed for {selection_label} with code {process.returncode}")
-
-        return elapsed_seconds
-
-    def reload_whisper_runtimes(self) -> None:
-        runtimes = discover_whisper_runtimes(BIN_DIR)
-        self.whisper_runtimes = runtimes
-        self.whisper_runtime_lookup = {str(runtime["key"]): runtime for runtime in runtimes}
-
-    def _get_whisper_runtime(self, key: str) -> dict[str, object] | None:
-        return self.whisper_runtime_lookup.get(key)
-
-    def _get_preferred_whisper_runtime(
-        self,
-        keys: tuple[str, ...],
-        *,
-        allow_fallback: bool = True,
-    ) -> dict[str, object] | None:
-        return get_preferred_whisper_runtime(
-            self.whisper_runtimes,
-            keys,
-            allow_fallback=allow_fallback,
-        )
-
-    def _build_missing_vulkan_runtime_message(self) -> str:
-        return (
-            "INFO: Hiding GPU options because no Vulkan runtime binary was found. "
-            "Expected "
-            "bin\\whisper.vulkan\\whisper-cli.exe or "
-            "bin\\whisper.cpp\\whisper-cli.exe."
-        )
-
-    def _build_missing_vulkan_backend_message(self) -> str:
-        return (
-            "INFO: Hiding GPU options because the Vulkan binary is present, "
-            "but no Vulkan devices were detected. GPU acceleration is "
-            "unavailable on this machine."
-        )
-
-    def _get_vulkan_gpu_availability(self) -> dict[str, object]:
-        runtime = self._get_preferred_whisper_runtime(("vulkan", "legacy"), allow_fallback=False)
-        if runtime is None:
-            return {
-                "status": "runtime_missing",
-                "devices": [],
-                "log_message": self._build_missing_vulkan_runtime_message(),
-                "note_label": GPU_RUNTIME_MISSING_LABEL,
-                "controls_enabled": False,
-            }
-
-        devices, detection_message = self._detect_vulkan_devices(runtime)
-        if detection_message is not None:
-            return {
-                "status": "detection_failed",
-                "devices": [],
-                "log_message": detection_message,
-                "note_label": GPU_DETECTION_FAILED_LABEL,
-                "controls_enabled": True,
-            }
-        if not devices:
-            return {
-                "status": "no_devices",
-                "devices": [],
-                "log_message": self._build_missing_vulkan_backend_message(),
-                "note_label": GPU_NO_DEVICES_LABEL,
-                "controls_enabled": True,
-            }
-        return {
-            "status": "available",
-            "devices": devices,
-            "log_message": None,
-            "note_label": "",
-            "controls_enabled": True,
-        }
-
-    def _resolve_whisper_runtime(self, selection_label: str) -> dict[str, object]:
-        self.reload_whisper_runtimes()
-        if self._is_cpu_selection(selection_label):
-            runtime = self._get_preferred_whisper_runtime(("cpu", "vulkan", "legacy"))
-        else:
-            runtime = self._get_preferred_whisper_runtime(("vulkan", "legacy", "cpu"))
-
-        if runtime is None:
-            raise FileNotFoundError(
-                "Missing whisper.cpp runtime. Expected "
-                "bin\\whisper.vulkan\\whisper-cli.exe and/or "
-                "bin\\whisper.cpu\\whisper-cli.exe."
-            )
-
-        return runtime
-
-    def _detect_vulkan_devices(
-        self,
-        runtime: dict[str, object],
-    ) -> tuple[list[dict[str, object]], str | None]:
-        return detect_vulkan_devices(Path(runtime["cli_path"]))
-
-    def _guess_best_gpu_index(self) -> int | None:
-        preferred_device = self._get_preferred_gpu_device(self.gpu_devices)
-        if preferred_device is None:
-            return None
-        return int(preferred_device["index"])
-
-    def _build_whisper_env(self, selection_label: str, runtime: dict[str, object]) -> dict[str, str]:
-        env = dict(os.environ)
-        if not bool(runtime["supports_vulkan"]):
-            return env
-        selected_gpu = self.gpu_options.get(selection_label)
-        if selected_gpu == "cpu":
-            return env
-        if selected_gpu is None:
-            selected_gpu = self._guess_best_gpu_index()
-        if isinstance(selected_gpu, int):
-            env["GGML_VK_VISIBLE_DEVICES"] = str(selected_gpu)
-        return env
-
-    def _build_auto_gpu_label(self, devices: list[dict[str, object]]) -> str:
-        return build_auto_gpu_label(devices)
-
-    def _is_cpu_selection(self, selection_label: str) -> bool:
-        return self.gpu_options.get(selection_label) == "cpu"
-
-    def _is_cpu_inference(self, selection_label: str, runtime: dict[str, object]) -> bool:
-        return self._is_cpu_selection(selection_label) or not bool(runtime["supports_vulkan"])
-
-    def _log_cpu_inference_details(self, selection_label: str, runtime: dict[str, object]) -> None:
-        if self._is_cpu_selection(selection_label):
-            self.log(CPU_THREAD_COUNT_LOG_MESSAGE)
-            return
-
-        if not bool(runtime["supports_vulkan"]):
-            self.log(
-                "WARNING: Vulkan runtime not available. Falling back to CPU runtime. "
-                f"{CPU_THREAD_COUNT_LOG_MESSAGE}"
-            )
-
-    def _warn_if_cpu_inference_may_be_slow(
-        self,
-        model_info: object,
-        selection_label: str,
-        runtime: dict[str, object],
-    ) -> bool:
-        is_cpu_inference = self._is_cpu_inference(selection_label, runtime)
-        if not is_cpu_inference:
-            return False
-
-        if not isinstance(model_info, dict):
-            return False
-        model_size_bytes = int(model_info["size_bytes"])
-        model_size_label = str(model_info["size_label"])
-        model_name = str(model_info["name"])
-
-        if model_size_bytes <= SLOW_CPU_MODEL_WARNING_THRESHOLD_BYTES:
-            return False
-
-        self.log(
-            f"WARNING: CPU inference with model {model_name} [{model_size_label}] may be slow."
-        )
-        return True
 
     @staticmethod
     def _format_model_size_label(size_bytes: int) -> str:
         return format_model_size_label(size_bytes)
-
-    @staticmethod
-    def _get_preferred_gpu_device(devices: list[dict[str, object]]) -> dict[str, object] | None:
-        return get_preferred_gpu_device(devices)
-
-    @staticmethod
-    def _slugify_label(label: str) -> str:
-        return slugify_label(label)
-
-    def _raise_if_cancelled(self) -> None:
-        if self.cancel_requested:
-            raise TranscriptionCancelled()
-
-    def _cleanup_audio_output(self, audio_output: Path, log_removal: bool = True) -> None:
-        if not audio_output.exists():
-            return
-        try:
-            audio_output.unlink()
-            if log_removal:
-                self.log(f"Removed temporary audio file: {audio_output}")
-        except OSError as exc:
-            self.log(f"WARNING: Could not remove temporary audio file {audio_output}: {exc}")
 
     def _schedule_ui_update(self, callback: Callable[[], None]) -> None:
         if self._is_closing:
@@ -1455,75 +918,6 @@ class App(ctk.CTk):
                 self.after(0, callback)
         except tk.TclError:
             pass
-
-    def _download_file(self, url: str, destination: Path) -> None:
-        last_percent = -1
-
-        def report_progress(blocks: int, block_size: int, total_size: int) -> None:
-            nonlocal last_percent
-            if total_size <= 0:
-                return
-            downloaded = min(blocks * block_size, total_size)
-            percent = int((downloaded * 100) / total_size)
-            if percent != last_percent and percent % 10 == 0:
-                last_percent = percent
-                self.log(f"Download progress: {percent}%")
-
-        try:
-            urllib.request.urlretrieve(url, destination, report_progress)
-        except OSError as exc:
-            raise RuntimeError(f"Could not download model: {exc}") from exc
-
-    def _send_download_telemetry_once(self) -> None:
-        if self.download_telemetry_sent or not TELEMETRY_APP_ID:
-            return
-
-        self.download_telemetry_sent = True
-        self._send_telemetry_async("model_download_pressed")
-
-    def _send_telemetry_async(self, signal_type: str) -> None:
-        threading.Thread(
-            target=self._send_telemetry_signal,
-            args=(signal_type,),
-            daemon=True,
-        ).start()
-
-    def _send_telemetry_signal(self, signal_type: str) -> None:
-        payload = {
-            "App.version": APP_VERSION,
-        }
-        gpu_vendors = build_gpu_vendors_payload_value(self.gpu_devices)
-        if gpu_vendors:
-            payload["App.gpuVendors"] = gpu_vendors
-
-        body = json.dumps(
-            [
-                {
-                    "appID": TELEMETRY_APP_ID,
-                    "clientUser": hashlib.sha256(str(uuid.getnode()).encode("utf-8")).hexdigest(),
-                    "sessionID": self.telemetry_session_id,
-                    "type": signal_type,
-                    "payload": payload,
-                }
-            ]
-        ).encode("utf-8")
-        request = urllib.request.Request(
-            TELEMETRY_URL,
-            data=body,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=5):
-                pass
-        except OSError:
-            pass
-
-    @staticmethod
-    def _quote_argument(arg: str) -> str:
-        if " " in arg or "\t" in arg:
-            return f'"{arg}"'
-        return arg
 
     @staticmethod
     def _truncate_result_label(name: str, max_length: int = 48) -> str:
@@ -1546,6 +940,11 @@ class App(ctk.CTk):
             state="normal",
             font=self.result_link_font,
         )
+
+    def _show_transcription_result(self, path: Path | None) -> None:
+        self._set_result_path(path)
+        if path is not None:
+            self.reveal_result_file()
 
     def _show_batch_progress(self, completed: int, total: int) -> None:
         self._set_input_path_text(f"{completed} of {total} files processed")
