@@ -10,7 +10,7 @@ from pathlib import Path
 
 import customtkinter as ctk
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog
 from tkinter import messagebox
 
 try:
@@ -106,11 +106,12 @@ class App(ctk.CTk):
         self.model_display_lookup: dict[str, str] = {}
         self.latest_result_path: Path | None = None
         self.download_dialog: ctk.CTkToplevel | None = None
+        self.about_dialog: ctk.CTkToplevel | None = None
         self.batch_dialog: ctk.CTkToplevel | None = None
         self.batch_folder_var = tk.StringVar()
         self.batch_selected_files: list[Path] = []
         self.batch_file_rows: list[Path] = []
-        self.batch_tree: ttk.Treeview | None = None
+        self.batch_file_vars: dict[Path, tk.BooleanVar] = {}
         self.telemetry_client = TelemetryClient(
             app_id=TELEMETRY_APP_ID,
             namespace=TELEMETRY_NAMESPACE,
@@ -351,66 +352,90 @@ class App(ctk.CTk):
         if self.batch_dialog is not None and self.batch_dialog.winfo_exists():
             self.batch_dialog.destroy()
 
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Batch Selection")
-        dialog.geometry("760x480")
-        dialog.minsize(680, 420)
-        dialog.transient(self)
-        dialog.grab_set()
-        dialog.grid_columnconfigure(0, weight=1)
-        dialog.grid_rowconfigure(2, weight=1)
-        self.batch_dialog = dialog
         self.batch_folder_var.set(folder)
+        dialog, _header_frame, content_frame, actions_frame = self._create_dialog_shell(
+            title="Batch Selection",
+            header_title="Choose files to process",
+            header_text=self.batch_folder_var.get(),
+            geometry="760x540",
+            minsize=(680, 420),
+        )
+        self.batch_dialog = dialog
         self.batch_file_rows = media_files
 
         preselected = set(self.batch_selected_files)
         selected_files = {path for path in media_files if path in preselected}
         if not selected_files:
             selected_files = set(media_files)
+        self.batch_file_vars = {}
 
+        list_frame = ctk.CTkFrame(content_frame)
+        list_frame.grid(row=0, column=0, sticky="nsew")
+        list_frame.grid_columnconfigure(0, weight=1)
+        list_frame.grid_rowconfigure(1, weight=1)
+
+        header_row = ctk.CTkFrame(list_frame, fg_color="transparent")
+        header_row.grid(row=0, column=0, padx=12, pady=(12, 4), sticky="ew")
+        header_row.grid_columnconfigure(1, weight=1)
         ctk.CTkLabel(
-            dialog,
-            text="Choose files to process",
-            font=ctk.CTkFont(size=18, weight="bold"),
-        ).grid(row=0, column=0, padx=20, pady=(20, 8), sticky="w")
-
+            header_row,
+            text="Use",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=("gray40", "gray70"),
+        ).grid(row=0, column=0, padx=(4, 12), pady=0, sticky="w")
         ctk.CTkLabel(
-            dialog,
-            textvariable=self.batch_folder_var,
-            justify="left",
-            wraplength=700,
-        ).grid(row=1, column=0, padx=20, pady=(0, 12), sticky="w")
+            header_row,
+            text="File",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=("gray40", "gray70"),
+        ).grid(row=0, column=1, padx=0, pady=0, sticky="w")
+        ctk.CTkLabel(
+            header_row,
+            text="Type",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=("gray40", "gray70"),
+        ).grid(row=0, column=2, padx=(12, 4), pady=0, sticky="e")
 
-        table_frame = ctk.CTkFrame(dialog)
-        table_frame.grid(row=2, column=0, padx=20, pady=0, sticky="nsew")
-        table_frame.grid_columnconfigure(0, weight=1)
-        table_frame.grid_rowconfigure(0, weight=1)
-
-        columns = ("selected", "name", "type")
-        tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="none")
-        tree.heading("selected", text="Use")
-        tree.heading("name", text="File")
-        tree.heading("type", text="Type")
-        tree.column("selected", width=70, anchor="center", stretch=False)
-        tree.column("name", width=500, anchor="w")
-        tree.column("type", width=110, anchor="w", stretch=False)
-
-        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scrollbar.set)
-        tree.grid(row=0, column=0, sticky="nsew")
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        file_list = ctk.CTkScrollableFrame(list_frame, corner_radius=10)
+        file_list.grid(row=1, column=0, padx=12, pady=(0, 12), sticky="nsew")
+        file_list.grid_columnconfigure(0, weight=1)
 
         for index, path in enumerate(media_files):
-            checked = "[x]" if path in selected_files else "[ ]"
-            tree.insert("", "end", iid=str(index), values=(checked, path.name, path.suffix.lower()))
+            row_frame = ctk.CTkFrame(file_list)
+            row_frame.grid(row=index, column=0, padx=0, pady=(0, 8), sticky="ew")
+            row_frame.grid_columnconfigure(1, weight=1)
 
-        tree.bind("<Button-1>", self._on_batch_tree_click)
-        tree.bind("<space>", self._on_batch_tree_space)
-        self.batch_tree = tree
+            selected_var = tk.BooleanVar(value=path in selected_files)
+            self.batch_file_vars[path] = selected_var
 
-        actions_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        actions_frame.grid(row=3, column=0, padx=20, pady=(16, 20), sticky="ew")
-        actions_frame.grid_columnconfigure(1, weight=1)
+            checkbox = ctk.CTkCheckBox(row_frame, text="", variable=selected_var, width=24)
+            checkbox.grid(row=0, column=0, padx=(12, 8), pady=10, sticky="w")
+
+            name_label = ctk.CTkLabel(row_frame, text=path.name, anchor="w")
+            name_label.grid(row=0, column=1, padx=0, pady=10, sticky="ew")
+
+            type_label = ctk.CTkLabel(
+                row_frame,
+                text=path.suffix.lower().lstrip(".").upper(),
+                width=72,
+                anchor="center",
+                corner_radius=999,
+                fg_color=("gray86", "gray22"),
+                text_color=("gray20", "gray90"),
+            )
+            type_label.grid(row=0, column=2, padx=(12, 12), pady=10, sticky="e")
+
+            for widget in (row_frame, name_label, type_label):
+                widget.bind(
+                    "<Button-1>",
+                    lambda _event, batch_path=path: self._toggle_batch_row(batch_path),
+                )
+
+        actions_frame.grid_columnconfigure(0, weight=0)
+        actions_frame.grid_columnconfigure(1, weight=0)
+        actions_frame.grid_columnconfigure(2, weight=1)
+        actions_frame.grid_columnconfigure(3, weight=0)
+        actions_frame.grid_columnconfigure(4, weight=0)
 
         ctk.CTkButton(
             actions_frame,
@@ -429,13 +454,13 @@ class App(ctk.CTk):
             text="Cancel",
             width=100,
             command=self.close_batch_dialog,
-        ).grid(row=0, column=2, padx=(12, 12), pady=0, sticky="e")
+        ).grid(row=0, column=3, padx=(12, 12), pady=0, sticky="e")
         ctk.CTkButton(
             actions_frame,
             text="Use selected",
             width=120,
             command=self.apply_batch_selection,
-        ).grid(row=0, column=3, padx=(0, 0), pady=0, sticky="e")
+        ).grid(row=0, column=4, padx=0, pady=0, sticky="e")
 
         dialog.protocol("WM_DELETE_WINDOW", self.close_batch_dialog)
 
@@ -443,7 +468,7 @@ class App(ctk.CTk):
         if self.batch_dialog is not None and self.batch_dialog.winfo_exists():
             self.batch_dialog.destroy()
         self.batch_dialog = None
-        self.batch_tree = None
+        self.batch_file_vars = {}
 
     def apply_batch_selection(self) -> None:
         selected = self._get_checked_batch_files()
@@ -466,52 +491,24 @@ class App(ctk.CTk):
         ]
         return sorted(media_files, key=lambda path: path.name.lower())
 
-    def _on_batch_tree_click(self, event: tk.Event) -> str | None:
-        if self.batch_tree is None:
-            return None
-        region = self.batch_tree.identify("region", event.x, event.y)
-        column = self.batch_tree.identify_column(event.x)
-        row_id = self.batch_tree.identify_row(event.y)
-        if region == "cell" and column == "#1" and row_id:
-            self._toggle_batch_row(row_id)
-            return "break"
-        return None
-
-    def _on_batch_tree_space(self, _event: tk.Event) -> str | None:
-        if self.batch_tree is None:
-            return None
-        selected_item = self.batch_tree.focus()
-        if selected_item:
-            self._toggle_batch_row(selected_item)
-            return "break"
-        return None
-
-    def _toggle_batch_row(self, row_id: str) -> None:
-        if self.batch_tree is None:
+    def _toggle_batch_row(self, path: Path) -> None:
+        variable = self.batch_file_vars.get(path)
+        if variable is None:
             return
-        values = list(self.batch_tree.item(row_id, "values"))
-        if not values:
-            return
-        values[0] = "[ ]" if values[0] == "[x]" else "[x]"
-        self.batch_tree.item(row_id, values=values)
+        variable.set(not variable.get())
 
     def _set_all_batch_rows(self, checked: bool) -> None:
-        if self.batch_tree is None:
-            return
-        marker = "[x]" if checked else "[ ]"
-        for row_id in self.batch_tree.get_children():
-            values = list(self.batch_tree.item(row_id, "values"))
-            values[0] = marker
-            self.batch_tree.item(row_id, values=values)
+        for variable in self.batch_file_vars.values():
+            variable.set(checked)
 
     def _get_checked_batch_files(self) -> list[Path]:
-        if self.batch_tree is None:
+        if not self.batch_file_vars:
             return list(self.batch_selected_files)
         selected: list[Path] = []
-        for row_id in self.batch_tree.get_children():
-            values = self.batch_tree.item(row_id, "values")
-            if values and values[0] == "[x]":
-                selected.append(self.batch_file_rows[int(row_id)])
+        for path in self.batch_file_rows:
+            variable = self.batch_file_vars.get(path)
+            if variable is not None and variable.get():
+                selected.append(path)
         return selected
 
     def _set_input_path_text(self, value: str) -> None:
@@ -638,6 +635,94 @@ class App(ctk.CTk):
             widget.configure(state=state)
         self._sync_gpu_controls_state()
 
+    def _create_dialog_shell(
+        self,
+        *,
+        title: str,
+        header_title: str,
+        header_text: str | None = None,
+        geometry: str,
+        minsize: tuple[int, int] | None = None,
+        resizable: tuple[bool, bool] | None = None,
+    ) -> tuple[ctk.CTkToplevel, ctk.CTkFrame, ctk.CTkFrame, ctk.CTkFrame]:
+        dialog = ctk.CTkToplevel(self)
+        dialog.title(title)
+        dialog.geometry(geometry)
+        if minsize is not None:
+            dialog.minsize(*minsize)
+        if resizable is not None:
+            dialog.resizable(*resizable)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(0, weight=1)
+
+        outer_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        outer_frame.grid(row=0, column=0, padx=20, pady=20, sticky="nsew")
+        outer_frame.grid_columnconfigure(0, weight=1)
+        outer_frame.grid_rowconfigure(1, weight=1)
+
+        header_frame = ctk.CTkFrame(outer_frame, fg_color="transparent")
+        header_frame.grid(row=0, column=0, padx=0, pady=(0, 12), sticky="ew")
+        header_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            header_frame,
+            text=header_title,
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).grid(row=0, column=0, padx=0, pady=0, sticky="w")
+
+        if header_text:
+            ctk.CTkLabel(
+                header_frame,
+                text=header_text,
+                justify="left",
+                wraplength=700,
+                text_color=("gray40", "gray70"),
+            ).grid(row=1, column=0, padx=0, pady=(6, 0), sticky="w")
+
+        content_frame = ctk.CTkFrame(outer_frame, fg_color="transparent")
+        content_frame.grid(row=1, column=0, padx=0, pady=0, sticky="nsew")
+        content_frame.grid_columnconfigure(0, weight=1)
+        content_frame.grid_rowconfigure(0, weight=1)
+
+        actions_frame = ctk.CTkFrame(outer_frame, fg_color="transparent")
+        actions_frame.grid(row=2, column=0, padx=0, pady=(16, 0), sticky="ew")
+        actions_frame.grid_columnconfigure(0, weight=1)
+        self._apply_windows_titlebar_theme(dialog)
+
+        return dialog, header_frame, content_frame, actions_frame
+
+    def _apply_windows_titlebar_theme(self, window: tk.Misc) -> None:
+        if ctypes is None or os.name != "nt":
+            return
+
+        def apply_theme() -> None:
+            if not window.winfo_exists():
+                return
+
+            try:
+                hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+                if hwnd == 0:
+                    return
+
+                dark_mode_enabled = ctk.get_appearance_mode().lower() == "dark"
+                value = ctypes.c_int(1 if dark_mode_enabled else 0)
+                dwm_set_window_attribute = ctypes.windll.dwmapi.DwmSetWindowAttribute
+                for attribute in (20, 19):
+                    result = dwm_set_window_attribute(
+                        hwnd,
+                        attribute,
+                        ctypes.byref(value),
+                        ctypes.sizeof(value),
+                    )
+                    if result == 0:
+                        break
+            except Exception:
+                pass
+
+        window.after(20, apply_theme)
+
     def show_download_dialog(self) -> None:
         if self.is_running:
             return
@@ -646,23 +731,16 @@ class App(ctk.CTk):
             self.download_dialog.focus()
             return
 
-        dialog = ctk.CTkToplevel(self)
-        dialog.title("Download Whisper Model")
-        dialog.geometry("520x260")
-        dialog.resizable(False, False)
-        dialog.transient(self)
-        dialog.grab_set()
-        dialog.grid_columnconfigure(0, weight=1)
+        dialog, _header_frame, content_frame, actions_frame = self._create_dialog_shell(
+            title="Download Whisper Model",
+            header_title="Choose a model to download",
+            geometry="520x260",
+            resizable=(False, False),
+        )
         self.download_dialog = dialog
 
-        ctk.CTkLabel(
-            dialog,
-            text="Choose a model to download",
-            font=ctk.CTkFont(size=18, weight="bold"),
-        ).grid(row=0, column=0, padx=20, pady=(20, 12), sticky="w")
-
-        options_frame = ctk.CTkFrame(dialog)
-        options_frame.grid(row=1, column=0, padx=20, pady=0, sticky="ew")
+        options_frame = ctk.CTkFrame(content_frame)
+        options_frame.grid(row=0, column=0, padx=0, pady=0, sticky="nsew")
         options_frame.grid_columnconfigure(0, weight=1)
 
         for index, option in enumerate(MODEL_OPTIONS):
@@ -674,8 +752,6 @@ class App(ctk.CTk):
                 value=option.name,
             ).grid(row=index, column=0, padx=16, pady=8, sticky="w")
 
-        actions_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-        actions_frame.grid(row=2, column=0, padx=20, pady=(16, 20), sticky="ew")
         actions_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkButton(
@@ -709,26 +785,112 @@ class App(ctk.CTk):
         self.download_dialog = None
 
     def show_about_dialog(self) -> None:
-        about_text = (
-            f"{APP_NAME}\n"
-            f"Version {APP_VERSION}\n"
-            "https://github.com/taro-ball/whisper-tk3000\n\n"
-            "Desktop app for transcribing audio to text with whisper.cpp.\n"
-            "Dedicated to my wife, who's love for science always inspires me.\n\n"
-            "Credits\n"
-            "- whisper.cpp project: \n   https://github.com/ggml-org/whisper.cpp\n"
-            "- ffmpeg for media conversion: \n   https://ffmpeg.org/about.html\n"
-            f"- Model downloads from the whisper.cpp Hugging Face repository: \n   {MODEL_REPO_URL}\n\n"
+        if self.about_dialog is not None and self.about_dialog.winfo_exists():
+            self.about_dialog.focus()
+            return
+
+        dialog, _header_frame, content_frame, actions_frame = self._create_dialog_shell(
+            title=f"About {APP_NAME}",
+            header_title=APP_NAME,
+            header_text="Desktop app for transcribing audio and video to text with whisper.cpp.",
+            geometry="560x420",
+            minsize=(520, 380),
         )
-        dialog = ctk.CTkToplevel(self)
-        dialog.title(f"About {APP_NAME}")
-        dialog.geometry("520x240")
-        dialog.transient(self)
-        dialog.grab_set()
-        text = ctk.CTkTextbox(dialog, wrap="word")
-        text.pack(fill="both", expand=True, padx=12, pady=12)
-        text.insert("1.0", about_text)
-        text.configure(state="disabled")
+        self.about_dialog = dialog
+
+        summary_frame = ctk.CTkFrame(content_frame)
+        summary_frame.grid(row=0, column=0, pady=(0, 12), sticky="ew")
+        summary_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            summary_frame,
+            text=f"Version {APP_VERSION}",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=("gray35", "gray75"),
+        ).grid(row=0, column=0, padx=16, pady=(14, 4), sticky="w")
+        ctk.CTkLabel(
+            summary_frame,
+            text="A local-first desktop transcription app with a CustomTkinter UI over whisper.cpp.",
+            justify="left",
+            wraplength=480,
+        ).grid(row=1, column=0, padx=16, pady=(0, 14), sticky="w")
+
+        resources_frame = ctk.CTkFrame(content_frame)
+        resources_frame.grid(row=1, column=0, pady=(0, 12), sticky="ew")
+        resources_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            resources_frame,
+            text="Resources",
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).grid(row=0, column=0, padx=16, pady=(14, 6), sticky="w")
+
+        about_links = (
+            (
+                "Project source",
+                "https://github.com/taro-ball/whisper-tk3000",
+                "Opened project page: https://github.com/taro-ball/whisper-tk3000",
+            ),
+            (
+                "whisper.cpp",
+                "https://github.com/ggml-org/whisper.cpp",
+                "Opened whisper.cpp project page: https://github.com/ggml-org/whisper.cpp",
+            ),
+            (
+                "FFmpeg",
+                "https://ffmpeg.org/about.html",
+                "Opened FFmpeg about page: https://ffmpeg.org/about.html",
+            ),
+            (
+                "Model repository",
+                MODEL_REPO_URL,
+                f"Opened model repository page: {MODEL_REPO_URL}",
+            ),
+        )
+        for index, (label, url, success_message) in enumerate(about_links, start=1):
+            ctk.CTkButton(
+                resources_frame,
+                text=label,
+                anchor="w",
+                command=lambda link=url, message=success_message: self._open_url(link, message),
+                fg_color="transparent",
+                text_color=("blue", "#7fb3ff"),
+                hover_color=self.controls_frame.cget("fg_color"),
+                border_width=0,
+            ).grid(row=index, column=0, padx=12, pady=2, sticky="ew")
+
+        credits_frame = ctk.CTkFrame(content_frame)
+        credits_frame.grid(row=2, column=0, sticky="ew")
+        credits_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            credits_frame,
+            text="Credits",
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).grid(row=0, column=0, padx=16, pady=(14, 6), sticky="w")
+        ctk.CTkLabel(
+            credits_frame,
+            text=(
+                "Built on top of whisper.cpp for speech recognition and FFmpeg for media conversion.\n"
+                "Dedicated to my wife, whose love for science always inspires me."
+            ),
+            justify="left",
+            wraplength=480,
+        ).grid(row=1, column=0, padx=16, pady=(0, 14), sticky="w")
+
+        ctk.CTkButton(
+            actions_frame,
+            text="Close",
+            width=100,
+            command=self.close_about_dialog,
+        ).grid(row=0, column=1, padx=0, pady=0, sticky="e")
+
+        dialog.protocol("WM_DELETE_WINDOW", self.close_about_dialog)
+
+    def close_about_dialog(self) -> None:
+        if self.about_dialog is not None and self.about_dialog.winfo_exists():
+            self.about_dialog.destroy()
+        self.about_dialog = None
 
     def open_manual_download_page(self) -> None:
         self._open_url(MODEL_REPO_URL, f"Opened manual download page: {MODEL_REPO_URL}")
