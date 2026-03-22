@@ -89,7 +89,7 @@ $env:WHISPER_TK3000_RUN_VULKAN_SMOKE=1
 .\build.ps1
 ```
 
-`build.ps1` is the canonical build entry point for this repository.
+`build.ps1` is the canonical build entry point for this repository. It builds from the packaging-only launcher `whisper_transcriber.py`, runs the packaged EXE with `--smoke-startup`, and fails if PyInstaller still reports startup-critical missing GUI imports such as `tkinter`.
 
 ### Optional Git Bash wrapper
 
