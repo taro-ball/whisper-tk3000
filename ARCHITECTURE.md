@@ -117,9 +117,12 @@ It is responsible for:
 
 - Canonical Windows build: `build.ps1`
 - Optional Git Bash wrapper: `build.sh`
+- Packaging-only launcher: `whisper_transcriber.py`
 - PyInstaller spec: `whisper_transcriber.spec`
 
 Prefer updating `build.ps1` first if the packaging workflow changes.
+
+`whisper_tk3000/__main__.py` remains the package entrypoint for `python -m whisper_tk3000`. `whisper_transcriber.py` exists only for the frozen Windows build: it imports `whisper_tk3000.app` via absolute imports and exposes a noninteractive startup smoke path for packaged validation.
 
 ## Testing Goals
 
