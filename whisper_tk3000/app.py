@@ -36,7 +36,8 @@ from .model_downloads import (
     ModelDownloadOption,
     download_model,
 )
-from .telemetry import TelemetryClient
+from .settings import SettingsStore
+from .telemetry import TelemetryClient, build_execution_class
 from .transcription_service import (
     ExecutionContext,
     ServiceCallbacks,
@@ -101,6 +102,8 @@ class App(ctk.CTk):
         self.prompt_var = tk.StringVar()
         self.debug_var = tk.BooleanVar(value=False)
         self.download_model_var = tk.StringVar(value=MODEL_OPTIONS[0].name)
+        self.settings_store = SettingsStore()
+        self.telemetry_enabled_var = tk.BooleanVar(value=self.settings_store.load().telemetry_enabled)
         self.available_models: list[dict[str, object]] = []
         self.available_models_by_name: dict[str, dict[str, object]] = {}
         self.model_display_lookup: dict[str, str] = {}
@@ -116,6 +119,7 @@ class App(ctk.CTk):
             app_id=TELEMETRY_APP_ID,
             namespace=TELEMETRY_NAMESPACE,
             app_version=APP_VERSION,
+            settings_store=self.settings_store,
         )
         self._suspend_input_path_tracking = False
         self._is_closing = False
@@ -788,13 +792,14 @@ class App(ctk.CTk):
         if self.about_dialog is not None and self.about_dialog.winfo_exists():
             self.about_dialog.focus()
             return
+        self.telemetry_enabled_var.set(self.settings_store.load().telemetry_enabled)
 
         dialog, _header_frame, content_frame, actions_frame = self._create_dialog_shell(
             title=f"About {APP_NAME}",
             header_title=APP_NAME,
             header_text="Desktop app for transcribing audio and video to text with whisper.cpp.",
-            geometry="560x420",
-            minsize=(520, 380),
+            geometry="560x520",
+            minsize=(520, 460),
         )
         self.about_dialog = dialog
 
@@ -859,8 +864,34 @@ class App(ctk.CTk):
                 border_width=0,
             ).grid(row=index, column=0, padx=12, pady=2, sticky="ew")
 
+        privacy_frame = ctk.CTkFrame(content_frame)
+        privacy_frame.grid(row=2, column=0, pady=(0, 12), sticky="ew")
+        privacy_frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            privacy_frame,
+            text="Privacy",
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).grid(row=0, column=0, padx=16, pady=(14, 6), sticky="w")
+        ctk.CTkCheckBox(
+            privacy_frame,
+            text="Enable anonymous usage telemetry",
+            variable=self.telemetry_enabled_var,
+            command=self.toggle_telemetry,
+        ).grid(row=1, column=0, padx=16, pady=(0, 6), sticky="w")
+        ctk.CTkLabel(
+            privacy_frame,
+            text=(
+                "When enabled, the app sends only anonymous transcription start, success, and failure "
+                "events with app version, coarse execution class, and a random install ID. "
+                "Turning telemetry off clears that ID; turning it back on generates a new one."
+            ),
+            justify="left",
+            wraplength=480,
+        ).grid(row=2, column=0, padx=16, pady=(0, 14), sticky="w")
+
         credits_frame = ctk.CTkFrame(content_frame)
-        credits_frame.grid(row=2, column=0, sticky="ew")
+        credits_frame.grid(row=3, column=0, sticky="ew")
         credits_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -892,6 +923,10 @@ class App(ctk.CTk):
             self.about_dialog.destroy()
         self.about_dialog = None
 
+    def toggle_telemetry(self) -> None:
+        settings = self.settings_store.set_telemetry_enabled(bool(self.telemetry_enabled_var.get()))
+        self.telemetry_enabled_var.set(settings.telemetry_enabled)
+
     def open_manual_download_page(self) -> None:
         self._open_url(MODEL_REPO_URL, f"Opened manual download page: {MODEL_REPO_URL}")
 
@@ -905,7 +940,7 @@ class App(ctk.CTk):
             self.log("ERROR: No download model selected.")
             return
 
-        self.telemetry_client.send_once_async("model_download_pressed", self.gpu_devices)
+
         self.close_download_dialog()
         self.set_running_state(True)
         worker = threading.Thread(
@@ -969,14 +1004,19 @@ class App(ctk.CTk):
 
     def _execute_transcription(self) -> None:
         should_show_batch_progress = False
+        execution_class: str | None = None
         try:
             configs = self._build_run_configs()
             should_show_batch_progress = len(configs) > 1
+            execution_context = self._build_execution_context()
+            execution_class = self._build_transcription_execution_class(execution_context)
+            self.telemetry_client.send_async("transcribe_start", execution_class)
             outcome = self.transcription_service.run_transcription(
                 configs,
-                self._build_execution_context(),
+                execution_context,
                 self.service_callbacks,
             )
+            self.telemetry_client.send_async("transcribe_success", execution_class)
             self._schedule_ui_update(
                 lambda path=outcome.last_output: self._show_transcription_result(path)
             )
@@ -984,6 +1024,8 @@ class App(ctk.CTk):
             self.log("Transcription cancelled.")
             self._schedule_ui_update(lambda: self._set_result_path(None))
         except Exception as exc:
+            if execution_class is not None:
+                self.telemetry_client.send_async("transcribe_fail", execution_class)
             self.log(f"ERROR: {exc}")
             self._schedule_ui_update(lambda: self._set_result_path(None))
         finally:
@@ -1066,6 +1108,15 @@ class App(ctk.CTk):
             gpu_options=dict(self.gpu_options),
             gpu_devices=list(self.gpu_devices),
             debug_enabled=self.debug_var.get(),
+        )
+
+    @staticmethod
+    def _build_transcription_execution_class(context: ExecutionContext) -> str:
+        return build_execution_class(
+            context.bin_dir,
+            context.gpu_selection_label,
+            context.gpu_options,
+            context.gpu_devices,
         )
 
     @staticmethod
@@ -1153,3 +1204,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+

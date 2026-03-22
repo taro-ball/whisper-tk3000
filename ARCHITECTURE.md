@@ -2,7 +2,7 @@
 
 ## Overview
 
-This app is organized around a thin UI/controller layer in `whisper_tk3000/app.py` and a small set of focused modules that own execution, pure build logic, runtime policy, downloads, and telemetry.
+This app is organized around a thin UI/controller layer in `whisper_tk3000/app.py` and a small set of focused modules that own execution, pure build logic, runtime policy, downloads, telemetry, and tiny persisted settings.
 
 The goal is to keep one obvious place to edit each concern:
 
@@ -12,6 +12,7 @@ The goal is to keep one obvious place to edit each concern:
 - Runtime discovery and CPU/GPU policy: `whisper_tk3000/platform_runtime.py`
 - Model download flow: `whisper_tk3000/model_downloads.py`
 - Telemetry sending: `whisper_tk3000/telemetry.py`
+- Tiny persisted app settings: `whisper_tk3000/settings.py`
 - Build workflow and packaging entry points: `build.ps1`, `build.sh`, `whisper_transcriber.py`
 - Python module entrypoint: `python -m whisper_tk3000`
 
@@ -98,10 +99,20 @@ It is responsible for:
 
 It is responsible for:
 
-- Session-scoped telemetry client state
-- One-shot signal tracking
-- Payload construction
+- Event-scoped transcription telemetry (`transcribe_start`, `transcribe_success`, `transcribe_fail`)
+- Minimal payload construction
+- Execution-class derivation for telemetry
 - Async HTTP send behavior
+
+### `whisper_tk3000/settings.py`
+
+`whisper_tk3000/settings.py` owns the tiny persisted settings file used by telemetry.
+
+It is responsible for:
+
+- Loading and saving the local JSON settings file
+- Persisting `telemetry_enabled`
+- Persisting and regenerating the random telemetry install ID
 
 ## Runtime Flow
 
@@ -138,3 +149,4 @@ The packaged app bundles `bin/` with the distribution, while models remain user-
 - If CPU/GPU choice behavior changes, edit `whisper_tk3000/platform_runtime.py`.
 - If model catalog or download behavior changes, edit `whisper_tk3000/model_downloads.py`.
 - If analytics behavior changes, edit `whisper_tk3000/telemetry.py`.
+

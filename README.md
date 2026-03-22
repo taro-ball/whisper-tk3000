@@ -39,6 +39,10 @@ It works on most Windows machines. If a Vulkan-capable GPU are available, transc
 - Model downloads from the `whisper.cpp` Hugging Face repository:
   https://huggingface.co/ggerganov/whisper.cpp/tree/main
 
+### Minimal telemetry
+
+This app can send minimal telemetry for usage and reliability analytics. When enabled, it sends the app version, a coarse GPU vendor/category, a random installation identifier, and a temporary session identifier as well as basic events such as transcription start/success/failure. It does not send audio, transcripts, prompts, filenames, or other user content. Telemetry can be disabled, and we do not sell this data.
+
 ---
 
 ## For Developers
@@ -98,3 +102,4 @@ If you intentionally use Git Bash on Windows, `build.sh` is a thin wrapper aroun
 ```bash
 ./build.sh
 ```
+

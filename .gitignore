@@ -9,3 +9,4 @@ dist/
 .codex/
 bin/
 models/
+whisper_tk3000.settings.json
