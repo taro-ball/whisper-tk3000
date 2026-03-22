@@ -12,10 +12,10 @@ The goal is to keep one obvious place to edit each concern:
 - Runtime discovery and CPU/GPU policy: `whisper_tk3000/platform_runtime.py`
 - Model download flow: `whisper_tk3000/model_downloads.py`
 - Telemetry sending: `whisper_tk3000/telemetry.py`
-- Build workflow and packaging entry points: `build.ps1`, `build.sh`, `whisper_transcriber.spec`
+- Build workflow and packaging entry points: `build.ps1`, `build.sh`, `whisper_transcriber.py`
 - Python module entrypoint: `python -m whisper_tk3000`
 
-The package resolves `bin/` and `models/` from the repo root by walking up from the package file location rather than treating the package directory itself as the app root.
+The app expects `bin/` and `models/` to remain sibling directories in the runtime layout. Packaging should preserve that assumption.
 
 ## Module Boundaries
 
@@ -115,14 +115,14 @@ It is responsible for:
 
 ## Build Workflow
 
-- Canonical Windows build: `build.ps1`
+- Source and development entrypoint: `python -m whisper_tk3000`
+- Canonical Windows packaging entrypoint: `build.ps1`
 - Optional Git Bash wrapper: `build.sh`
-- Packaging-only launcher: `whisper_transcriber.py`
-- PyInstaller spec: `whisper_transcriber.spec`
+- Frozen-build launcher: `whisper_transcriber.py`
 
-Prefer updating `build.ps1` first if the packaging workflow changes.
+`build.ps1` is the first place to edit when the packaging workflow changes. `whisper_transcriber.py` exists only for the frozen Windows build and should stay separate from the normal module entrypoint.
 
-`whisper_tk3000/__main__.py` remains the package entrypoint for `python -m whisper_tk3000`. `whisper_transcriber.py` exists only for the frozen Windows build: it imports `whisper_tk3000.app` via absolute imports and exposes a noninteractive startup smoke path for packaged validation.
+The packaged app bundles `bin/` with the distribution, while models remain user-managed under `models/` rather than being baked into the executable.
 
 ## Testing Goals
 
