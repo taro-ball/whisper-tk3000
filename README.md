@@ -6,13 +6,12 @@ It works on most Windows machines. If a Vulkan-capable GPU are available, transc
 
 ## Features
 - Transcribe common audio and video formats, including `.mp3`, `.wav`, `.m4a`, `.flac`, `.aac`, `.ogg`, `.webm`, `.mp4`, `.mkv`, `.mov`, and `.avi`.
+- AMD and Nvidia GPUs are supported (Intel support is unstable)
 - Process a single file or a selectable batch from a folder.
 - Export transcripts as plain text (`.txt`) or subtitle files (`.srt`).
 - Use an optional initial prompt to help with names, jargon, or context.
-- AMD and Nvidia GPUs are supported (On Intel GPU's, it falls back to the CPU because Intel Vulkan drivers can be inconsistent.)
 - Run a built-in benchmark to compare available CPU and GPU backends on your machine.
 - Download recommended Whisper models directly in the app.
-
 
 ![App screenshot](docs/images/screenshot.jpg)
 
