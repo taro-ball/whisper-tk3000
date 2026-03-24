@@ -41,7 +41,7 @@ It works on most Windows machines. If a Vulkan-capable GPU are available, transc
 
 ### Minimal telemetry
 
-This app can send minimal telemetry for usage and reliability analytics. When enabled, it sends the app version, a coarse GPU vendor/category, a random installation identifier, and a temporary session identifier as well as basic events such as transcription start/success/failure. It does not send audio, transcripts, prompts, filenames, or other user content. Telemetry can be disabled, and we do not sell this data.
+This app can send minimal anonymous telemetry to help improve reliability. When enabled, it sends basic transcription events such as start, success, and failure, along with the app version, a coarse indicator of whether transcription ran on CPU or GPU, and a random installation identifier. It does not send audio, transcripts, prompts, filenames, or other user content. Telemetry can be disabled at any time.
 
 ---
 
