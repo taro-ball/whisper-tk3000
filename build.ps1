@@ -86,24 +86,49 @@ if (Test-Path $outputDir) {
 
 Move-Item -Path $sourceDir -Destination $outputDir -Force
 
-$portableArchiveName = "${portableProductName}-v${appVersion}-${portableArchLabel}-portable-${timestamp}.zip"
+$portableArchiveName = "${portableProductName}-v${appVersion}-${portableArchLabel}-full-bundle-portable-${timestamp}.zip"
 $portableArchivePath = Join-Path $repoRoot "dist\$portableArchiveName"
+$cpuMinimalArchiveName = "${portableProductName}-v${appVersion}-${portableArchLabel}-cpu-minimal-portable-${timestamp}.zip"
+$cpuMinimalArchivePath = Join-Path $repoRoot "dist\$cpuMinimalArchiveName"
 $zipStagingRoot = Join-Path $repoRoot "dist\_zip_stage\$timestamp"
-$zipFolderPath = Join-Path $zipStagingRoot $portableProductName
+$portableZipFolderPath = Join-Path $zipStagingRoot "portable\$portableProductName"
+$cpuMinimalZipFolderPath = Join-Path $zipStagingRoot "cpu-minimal\$portableProductName"
 
 if (Test-Path $portableArchivePath) {
     Remove-Item $portableArchivePath -Force
+}
+if (Test-Path $cpuMinimalArchivePath) {
+    Remove-Item $cpuMinimalArchivePath -Force
 }
 
 if (Test-Path $zipStagingRoot) {
     Remove-Item $zipStagingRoot -Recurse -Force
 }
 
-New-Item -ItemType Directory -Path $zipFolderPath -Force | Out-Null
-Get-ChildItem -Path $outputDir -Force | Copy-Item -Destination $zipFolderPath -Recurse -Force
+New-Item -ItemType Directory -Path $portableZipFolderPath -Force | Out-Null
+Get-ChildItem -Path $outputDir -Force | Copy-Item -Destination $portableZipFolderPath -Recurse -Force
+
+New-Item -ItemType Directory -Path $cpuMinimalZipFolderPath -Force | Out-Null
+Get-ChildItem -Path $outputDir -Force | Copy-Item -Destination $cpuMinimalZipFolderPath -Recurse -Force
+
+$cpuMinimalInternalBinPath = Join-Path $cpuMinimalZipFolderPath "_internal\bin"
+$cpuMinimalFfmpegPath = Join-Path $cpuMinimalInternalBinPath "ffmpeg.exe"
+$cpuMinimalExcludedRuntimeDirs = @(
+    (Join-Path $cpuMinimalInternalBinPath "whisper.vulkan"),
+    (Join-Path $cpuMinimalInternalBinPath "whisper.cpp")
+)
+if (Test-Path $cpuMinimalFfmpegPath) {
+    Remove-Item $cpuMinimalFfmpegPath -Force
+}
+foreach ($runtimeDir in $cpuMinimalExcludedRuntimeDirs) {
+    if (Test-Path $runtimeDir) {
+        Remove-Item $runtimeDir -Recurse -Force
+    }
+}
 
 try {
-    Compress-Archive -Path $zipFolderPath -DestinationPath $portableArchivePath -Force
+    Compress-Archive -Path $portableZipFolderPath -DestinationPath $portableArchivePath -Force
+    Compress-Archive -Path $cpuMinimalZipFolderPath -DestinationPath $cpuMinimalArchivePath -Force
 }
 finally {
     if (Test-Path $zipStagingRoot) {
@@ -113,3 +138,4 @@ finally {
 
 Write-Output "Build complete: $outputDir"
 Write-Output "Portable archive: $portableArchivePath"
+Write-Output "CPU-only minimal archive: $cpuMinimalArchivePath"

@@ -11,6 +11,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+WHISPER_DIRECT_INPUT_SUFFIXES = frozenset({
+    '.wav',
+    '.mp3',
+    '.ogg',
+    '.flac',
+})
+
 
 # ============================================================================
 # RunConfig Dataclass
@@ -76,6 +83,17 @@ def build_unique_output_path(
 # ============================================================================
 # ffmpeg Command Building
 # ============================================================================
+
+def requires_ffmpeg_conversion(
+    input_path: Path,
+    *,
+    duration_seconds: int | None = None,
+) -> bool:
+    """Return whether ffmpeg is required before whisper.cpp can consume input."""
+    if duration_seconds is not None:
+        return True
+    return input_path.suffix.lower() not in WHISPER_DIRECT_INPUT_SUFFIXES
+
 
 def build_ffmpeg_command(
     input_path: Path,
@@ -318,3 +336,4 @@ def build_auto_gpu_label(devices: list[dict[str, Any]]) -> str:
     best_index = int(preferred_device["index"])
     best_name = str(preferred_device["name"])
     return f"{AUTO_GPU_LABEL} - GPU {best_index + 1} - {best_name}"
+

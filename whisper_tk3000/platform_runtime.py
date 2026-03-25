@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import struct
 import subprocess
 from dataclasses import dataclass
@@ -55,6 +56,43 @@ MISSING_WHISPER_RUNTIME_MESSAGE = (
     "bin\\whisper.vulkan\\whisper-cli.exe and/or "
     "bin\\whisper.cpu\\whisper-cli.exe."
 )
+FFMPEG_EXECUTABLE_NAME = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+
+
+def discover_bundled_ffmpeg(bin_dir: Path) -> Path | None:
+    bundled_path = bin_dir / FFMPEG_EXECUTABLE_NAME
+    if bundled_path.exists():
+        return bundled_path
+    return None
+
+
+def discover_ffmpeg_path(bin_dir: Path) -> Path | None:
+    bundled_path = discover_bundled_ffmpeg(bin_dir)
+    if bundled_path is not None:
+        return bundled_path
+
+    discovered_path = shutil.which("ffmpeg")
+    if not discovered_path:
+        return None
+    return Path(discovered_path)
+
+
+def build_missing_ffmpeg_message(
+    input_path: Path,
+    *,
+    duration_seconds: int | None = None,
+) -> str:
+    if duration_seconds is not None:
+        return (
+            "FFmpeg is required to prepare benchmark audio. Install ffmpeg on PATH "
+            "or include bin\\ffmpeg.exe."
+        )
+
+    input_type = input_path.suffix.lower() or "selected"
+    return (
+        f"FFmpeg is required to process {input_type} inputs. Install ffmpeg on PATH "
+        "or include bin\\ffmpeg.exe."
+    )
 
 
 @dataclass(frozen=True)
@@ -87,7 +125,6 @@ class GpuSelectionState:
     note_label: str
     controls_enabled: bool
     cpu_option_label: str
-
 
 # ============================================================================
 # CPU Detection
@@ -681,3 +718,5 @@ def build_benchmark_option_labels(
         if label != cpu_option_label and not label.startswith(AUTO_GPU_LABEL)
     )
     return labels
+
+

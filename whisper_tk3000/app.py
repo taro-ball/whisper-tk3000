@@ -22,10 +22,13 @@ from .core_logic import (
     RunConfig,
     build_run_configs,
     format_model_size_label,
+    requires_ffmpeg_conversion,
 )
 from .platform_runtime import (
     AUTO_GPU_LABEL,
     build_cpu_execution_policy,
+    build_missing_ffmpeg_message,
+    discover_ffmpeg_path,
     load_gpu_selection_state,
     resolve_whisper_runtime,
 )
@@ -48,12 +51,11 @@ from .transcription_service import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP_NAME = "whisper-tk3000"
-APP_VERSION = "0.4.1"
+APP_VERSION = "0.4.3"
 APP_TITLE = "whisper-tk3000 audio to text transcriber"
 TELEMETRY_APP_ID = "5FD59222-E42C-4491-AD54-9A8FA5088609"
 TELEMETRY_NAMESPACE = "com.gr"
 BIN_DIR = REPO_ROOT / "bin"
-FFMPEG_PATH = BIN_DIR / "ffmpeg.exe"
 MODELS_DIR = REPO_ROOT / "models"
 MEDIA_SUFFIXES = (
     ".mp4",
@@ -1038,6 +1040,7 @@ class App(ctk.CTk):
     def _execute_benchmark(self) -> None:
         try:
             configs = self._build_run_configs()
+            self._validate_ffmpeg_requirement([configs[0].input_path], duration_seconds=120)
             self.transcription_service.run_benchmark(
                 configs[0],
                 self._build_execution_context(),
@@ -1052,9 +1055,6 @@ class App(ctk.CTk):
             self._schedule_ui_update(lambda: self.set_running_state(False))
 
     def _build_run_configs(self) -> list[RunConfig]:
-        if not FFMPEG_PATH.exists():
-            raise FileNotFoundError(f"Missing dependency: {FFMPEG_PATH}")
-
         resolve_whisper_runtime(BIN_DIR, self.gpu_var.get().strip(), self.gpu_options)
 
         selected_model = self._get_selected_model_name()
@@ -1073,7 +1073,8 @@ class App(ctk.CTk):
 
         prompt = self.prompt_var.get().strip()
         input_paths = self._get_input_paths()
-        
+        self._validate_ffmpeg_requirement(input_paths)
+
         return build_run_configs(
             input_paths=input_paths,
             model_path=model_path,
@@ -1099,9 +1100,39 @@ class App(ctk.CTk):
 
         return [input_path]
 
+    def _validate_ffmpeg_requirement(
+        self,
+        input_paths: list[Path],
+        *,
+        duration_seconds: int | None = None,
+    ) -> None:
+        required_input = next(
+            (
+                input_path
+                for input_path in input_paths
+                if requires_ffmpeg_conversion(
+                    input_path,
+                    duration_seconds=duration_seconds,
+                )
+            ),
+            None,
+        )
+        if required_input is None:
+            return
+
+        if discover_ffmpeg_path(BIN_DIR) is not None:
+            return
+
+        raise FileNotFoundError(
+            build_missing_ffmpeg_message(
+                required_input,
+                duration_seconds=duration_seconds,
+            )
+        )
+
     def _build_execution_context(self) -> ExecutionContext:
         return ExecutionContext(
-            ffmpeg_path=FFMPEG_PATH,
+            ffmpeg_path=discover_ffmpeg_path(BIN_DIR),
             bin_dir=BIN_DIR,
             cpu_policy=self.cpu_policy,
             gpu_selection_label=self.gpu_var.get().strip(),

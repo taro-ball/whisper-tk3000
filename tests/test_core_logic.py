@@ -7,6 +7,7 @@ from whisper_tk3000.core_logic import (
     build_ffmpeg_command,
     build_unique_output_path,
     build_whisper_command,
+    requires_ffmpeg_conversion,
 )
 
 
@@ -30,6 +31,19 @@ class CoreLogicTests(unittest.TestCase):
         output_path = build_unique_output_path(input_path, ".wav")
 
         self.assertEqual(output_path, temp_path / "clip-2.wav")
+
+    def test_requires_ffmpeg_conversion_matches_supported_direct_input_types(self) -> None:
+        self.assertFalse(requires_ffmpeg_conversion(Path(r"C:\input\clip.wav")))
+        self.assertFalse(requires_ffmpeg_conversion(Path(r"C:\input\clip.mp3")))
+        self.assertFalse(requires_ffmpeg_conversion(Path(r"C:\input\clip.ogg")))
+        self.assertFalse(requires_ffmpeg_conversion(Path(r"C:\input\clip.flac")))
+        self.assertTrue(requires_ffmpeg_conversion(Path(r"C:\input\clip.mp4")))
+        self.assertTrue(
+            requires_ffmpeg_conversion(
+                Path(r"C:\input\clip.wav"),
+                duration_seconds=120,
+            )
+        )
 
     def test_build_ffmpeg_command_includes_expected_conversion_flags(self) -> None:
         input_path = Path(r"C:\input\clip.mp4")

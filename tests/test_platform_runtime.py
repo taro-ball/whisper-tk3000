@@ -12,6 +12,7 @@ from whisper_tk3000.platform_runtime import (
     build_cpu_inference_log_message,
     build_cpu_slow_warning,
     build_whisper_env,
+    discover_ffmpeg_path,
     discover_whisper_runtimes,
     resolve_whisper_runtime,
 )
@@ -196,6 +197,28 @@ class PlatformRuntimeTests(unittest.TestCase):
 
         self.assertEqual(labels, [cpu_label, "GPU 1 - Integrated", "GPU 2 - Discrete"])
 
+
+    @patch("whisper_tk3000.platform_runtime.shutil.which", return_value=r"C:\tools\ffmpeg.exe")
+    def test_discover_ffmpeg_path_prefers_bundled_binary(self, which_mock) -> None:
+        bin_dir = _make_temp_dir("tmp-ffmpeg-bundled")
+        self.addCleanup(lambda: shutil.rmtree(bin_dir, ignore_errors=True))
+        bundled_path = bin_dir / "ffmpeg.exe"
+        bundled_path.touch()
+
+        discovered_path = discover_ffmpeg_path(bin_dir)
+
+        self.assertEqual(discovered_path, bundled_path)
+        which_mock.assert_not_called()
+
+    @patch("whisper_tk3000.platform_runtime.shutil.which", return_value=r"C:\tools\ffmpeg.exe")
+    def test_discover_ffmpeg_path_falls_back_to_path(self, which_mock) -> None:
+        bin_dir = _make_temp_dir("tmp-ffmpeg-path")
+        self.addCleanup(lambda: shutil.rmtree(bin_dir, ignore_errors=True))
+
+        discovered_path = discover_ffmpeg_path(bin_dir)
+
+        self.assertEqual(discovered_path, Path(r"C:\tools\ffmpeg.exe"))
+        which_mock.assert_called_once_with("ffmpeg")
 
 if __name__ == "__main__":
     unittest.main()
