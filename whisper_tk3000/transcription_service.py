@@ -13,6 +13,7 @@ from .core_logic import (
     build_ffmpeg_command,
     build_unique_output_path,
     build_whisper_command,
+    requires_ffmpeg_conversion,
     slugify_label,
 )
 from .platform_runtime import (
@@ -21,6 +22,7 @@ from .platform_runtime import (
     build_cpu_inference_log_message,
     build_cpu_slow_warning,
     build_hidden_subprocess_kwargs,
+    build_missing_ffmpeg_message,
     build_whisper_env,
     is_cpu_selection,
     resolve_whisper_runtime,
@@ -33,7 +35,7 @@ class TranscriptionCancelled(Exception):
 
 @dataclass(frozen=True)
 class ExecutionContext:
-    ffmpeg_path: Path
+    ffmpeg_path: Path | None
     bin_dir: Path
     cpu_policy: CpuExecutionPolicy
     gpu_selection_label: str
@@ -111,7 +113,7 @@ class TranscriptionService:
                 callbacks.log(f"Selected model: {config.model_path.name}")
 
             try:
-                self._convert_input_to_audio(
+                audio_input_path = self._prepare_audio_input(
                     config,
                     context,
                     callbacks,
@@ -159,6 +161,7 @@ class TranscriptionService:
 
                 whisper_command = self._build_whisper_command(
                     config,
+                    audio_input_path,
                     context,
                     selection_label,
                     whisper_runtime,
@@ -206,7 +209,7 @@ class TranscriptionService:
 
             callbacks.log(f"========================= Benchmarking on {input_path.name}")
             callbacks.log(f"Selected model: {config.model_path.name}")
-            self._convert_input_to_audio(
+            audio_input_path = self._prepare_audio_input(
                 config,
                 context,
                 callbacks,
@@ -232,7 +235,7 @@ class TranscriptionService:
                     model_path=config.model_path,
                     model_info=config.model_info,
                     prompt=config.prompt,
-                    audio_output=audio_output,
+                    audio_output=audio_input_path,
                     output_base=output_base,
                     transcript_output=transcript_output,
                 )
@@ -251,6 +254,7 @@ class TranscriptionService:
                 )
                 whisper_command = self._build_whisper_command(
                     benchmark_config,
+                    audio_input_path,
                     context,
                     label,
                     whisper_runtime,
@@ -300,7 +304,7 @@ class TranscriptionService:
                     except OSError:
                         pass
 
-    def _convert_input_to_audio(
+    def _prepare_audio_input(
         self,
         config: RunConfig,
         context: ExecutionContext,
@@ -309,10 +313,27 @@ class TranscriptionService:
         audio_output: Path | None = None,
         duration_seconds: int | None = None,
         debug_enabled: bool = False,
-    ) -> None:
+    ) -> Path:
+        if not requires_ffmpeg_conversion(
+            config.input_path,
+            duration_seconds=duration_seconds,
+        ):
+            if debug_enabled:
+                callbacks.log(f"Using input directly without ffmpeg conversion: {config.input_path}")
+            return config.input_path
+
+        if context.ffmpeg_path is None:
+            raise RuntimeError(
+                build_missing_ffmpeg_message(
+                    config.input_path,
+                    duration_seconds=duration_seconds,
+                )
+            )
+
+        target_audio_output = audio_output or config.audio_output
         ffmpeg_command = build_ffmpeg_command(
             input_path=config.input_path,
-            audio_output=audio_output or config.audio_output,
+            audio_output=target_audio_output,
             ffmpeg_path=context.ffmpeg_path,
             include_stats=debug_enabled,
             duration_seconds=duration_seconds,
@@ -323,10 +344,12 @@ class TranscriptionService:
             callbacks,
             log_details=debug_enabled,
         )
+        return target_audio_output
 
     def _build_whisper_command(
         self,
         config: RunConfig,
+        audio_input_path: Path,
         context: ExecutionContext,
         selection_label: str,
         runtime: dict[str, Any],
@@ -336,7 +359,7 @@ class TranscriptionService:
     ) -> list[str]:
         return build_whisper_command(
             model_path=config.model_path,
-            audio_output=config.audio_output,
+            audio_output=audio_input_path,
             output_base=config.output_base,
             whisper_cli_path=Path(runtime["cli_path"]),
             output_format="txt" if force_txt else config.format,

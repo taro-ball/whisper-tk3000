@@ -101,6 +101,7 @@ class AppTelemetryTests(unittest.TestCase):
             logs=[],
         )
         app._build_run_configs = lambda: [object()]
+        app._validate_ffmpeg_requirement = lambda input_paths, duration_seconds=None: None
         app._build_execution_context = lambda: object()
         app._schedule_ui_update = lambda callback: callback()
         app.set_running_state = lambda running: app.logs.append(f"running:{running}")
